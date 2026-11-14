@@ -2,8 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '@/config/supabase';
 import { toast } from 'react-hot-toast';
-import PhoneInput from 'react-phone-input-2';
-import 'react-phone-input-2/lib/style.css';
+import PhoneInput from '@/components/ui/phone-input';
 import { AddressAutocomplete } from '@/components/AddressAutocomplete';
 
 /// <reference types="@types/google.maps" />
