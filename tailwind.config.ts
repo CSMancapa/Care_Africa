@@ -25,17 +25,19 @@ export default {
         ring: "hsl(var(--ring))",
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
+        // Brand colours come from CSS variables so each practice can use its own
+        // (see src/lib/branding.ts). <alpha-value> keeps classes like bg-primary/10 working.
         primary: {
-          DEFAULT: "#EA7C1F",
-          foreground: "#FFFFFF",
+          DEFAULT: "hsl(var(--brand-primary) / <alpha-value>)",
+          foreground: "hsl(var(--brand-primary-foreground) / <alpha-value>)",
         },
         secondary: {
           DEFAULT: "#718096",
           foreground: "#FFFFFF",
         },
         accent: {
-          DEFAULT: "#FFB067",
-          foreground: "#1A1A1A",
+          DEFAULT: "hsl(var(--brand-accent) / <alpha-value>)",
+          foreground: "hsl(var(--brand-accent-foreground) / <alpha-value>)",
         },
         destructive: {
           DEFAULT: "hsl(var(--destructive))",

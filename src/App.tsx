@@ -16,6 +16,7 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import Inventory from "./pages/Inventory";
 import Register from "./pages/Register";
 import AuthCallback from './pages/AuthCallback';
+import { PracticeProvider } from "./context/PracticeContext";
 
 import Sales from "./pages/Sales";
 
@@ -27,6 +28,7 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter>
+        <PracticeProvider>
         <Routes>
           {/* Public routes */}
           <Route path="/login" element={<Login />} />
@@ -72,6 +74,7 @@ const App = () => (
           <Route path="/auth-callback" element={<AuthCallback />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
+        </PracticeProvider>
       </BrowserRouter>
     </TooltipProvider>
   </QueryClientProvider>

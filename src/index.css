@@ -4,6 +4,13 @@
 
 @layer base {
   :root {
+    /* Brand colours. These are Care Africa's defaults; after login they are
+       replaced with the practice's own colours (src/lib/branding.ts). */
+    --brand-primary: 27.4 82.9% 52%;            /* #EA7C1F */
+    --brand-primary-foreground: 0 0% 100%;
+    --brand-accent: 28.8 100% 70.2%;            /* #FFB067 */
+    --brand-accent-foreground: 0 0% 10.2%;      /* #1A1A1A */
+
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
 

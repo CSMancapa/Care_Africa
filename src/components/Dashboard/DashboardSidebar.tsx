@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "@/config/supabase";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { usePractice } from "@/context/PracticeContext";
 
 const menuItems = [
   {
@@ -46,6 +47,7 @@ const menuItems = [
 export function DashboardSidebar() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { practice, practices, loading, switchPractice } = usePractice();
 
   const handleLogout = async () => {
     try {
@@ -61,12 +63,39 @@ export function DashboardSidebar() {
 
   return (
     <aside className="fixed left-0 top-0 h-screen w-64 border-r border-border bg-card flex flex-col">
-      {/* Logo Section */}
-      <div className="p-6">
-        <h1 className="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
-          Care Africa
-        </h1>
+      {/* Practice brand: logo and name in the practice's own colours */}
+      <div className="p-6 flex items-center gap-3 min-h-[88px]">
+        {practice?.logo_url && (
+          <img
+            src={practice.logo_url}
+            alt=""
+            className="h-10 w-10 rounded-md object-contain shrink-0"
+          />
+        )}
+        {loading ? (
+          <div className="h-6 w-36 rounded bg-muted animate-pulse" />
+        ) : (
+          <h1 className="text-xl font-bold leading-tight text-primary break-words">
+            {practice?.name ?? "Care Africa"}
+          </h1>
+        )}
       </div>
+
+      {practices.length > 1 && (
+        <div className="px-6 pb-4">
+          <label htmlFor="practice-switch" className="sr-only">Switch practice</label>
+          <select
+            id="practice-switch"
+            value={practice?.id}
+            onChange={(e) => switchPractice(e.target.value)}
+            className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm"
+          >
+            {practices.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       {/* Navigation Menu */}
       <nav className="flex-1 px-3">

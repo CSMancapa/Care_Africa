@@ -14,6 +14,7 @@ import { LogOut } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Checkbox } from '@/components/ui/checkbox';
 import { AddressAutocomplete } from '@/components/AddressAutocomplete';
+import { BrandingSettings } from '@/components/Settings/BrandingSettings';
 
 // Import your types from Onboarding or create a separate types file
 import type { PracticeData, BusinessHours, DoctorProfile, ServicePrice } from '@/types/practice';
@@ -142,6 +143,7 @@ export default function Settings() {
             <TabsTrigger value="services">Services & Insurance</TabsTrigger>
             <TabsTrigger value="rewards">Rewards Program</TabsTrigger>
             <TabsTrigger value="doctors">Doctors</TabsTrigger>
+            <TabsTrigger value="branding">Branding</TabsTrigger>
           </TabsList>
 
           <TabsContent value="general">
@@ -200,6 +202,10 @@ export default function Settings() {
               onSave={(data) => handleSave('doctors', data.doctors)}
               saving={saving}
             />
+          </TabsContent>
+
+          <TabsContent value="branding">
+            <BrandingSettings />
           </TabsContent>
         </Tabs>
       </div>
