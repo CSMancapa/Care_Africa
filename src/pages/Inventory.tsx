@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { supabase } from '@/config/supabase';
+import { listProducts } from '@/lib/db/products';
 import { useCurrentPractice } from '@/hooks/useCurrentPractice';
 import {
   Sheet,
@@ -34,19 +34,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import ProductFormModal from "@/components/Products/ProductFormModal";
+import ProductFormModal, { type Product as FormProduct } from "@/components/Products/ProductFormModal";
 
-interface Product {
-  id: string;
-  name: string;
-  sku: string;
-  current_stock: number;
-  min_stock_level: number;
-  price: number;
-  category: string;
-  practice_id: string;
-  cost_price?: number;
-}
+// Same shape as the product form and lib/db/products.ts
+type Product = FormProduct;
 
 interface StockAlert {
   product: Product;
@@ -86,13 +77,7 @@ const Inventory: React.FC = () => {
     if (!practiceId) return;
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('products')
-        .select('*')
-        .eq('practice_id', practiceId);
-
-      if (error) throw error;
-      setProducts(data || []);
+      setProducts(await listProducts(practiceId));
     } catch (error) {
       console.error('Error fetching products:', error);
       toast.error('Failed to fetch products');
@@ -172,7 +157,7 @@ const Inventory: React.FC = () => {
               <td className="px-6 py-4">{product.sku}</td>
               <td className="px-6 py-4">{product.category}</td>
               <td className="px-6 py-4">{product.current_stock}</td>
-              <td className="px-6 py-4">${product.price.toFixed(2)}</td>
+              <td className="px-6 py-4">R{product.price.toFixed(2)}</td>
               <td className="px-6 py-4">
                 {product.cost_price ? (
                   <span className="text-green-600">
@@ -234,7 +219,7 @@ const Inventory: React.FC = () => {
             <p className="text-sm text-gray-500">SKU: {product.sku}</p>
             <div className="flex justify-between items-center">
               <span className="text-sm font-medium text-gray-900">
-                ${product.price.toFixed(2)}
+                R{product.price.toFixed(2)}
                 {product.cost_price && (
                   <span className="ml-2 text-xs text-green-600">
                     ({calculateMargin(product.price, product.cost_price)}% margin)
@@ -430,7 +415,7 @@ const Inventory: React.FC = () => {
               <div>
                 <p className="text-sm text-gray-600">Total Value</p>
                 <h3 className="text-2xl font-semibold text-gray-900">
-                  ${formatNumber(products.reduce((sum, product) => 
+                  R{formatNumber(products.reduce((sum, product) => 
                     sum + (product.price * product.current_stock), 0))}
                 </h3>
               </div>
@@ -514,12 +499,14 @@ const Inventory: React.FC = () => {
       </div>
       <ProductFormModal 
         open={isProductModalOpen}
-        onOpenChange={setIsProductModalOpen}
-        product={editingProduct}
-        onSuccess={() => {
-          fetchProducts();
-          setEditingProduct(undefined);
+        onOpenChange={(open) => {
+          setIsProductModalOpen(open);
+          if (!open) {
+            fetchProducts();
+            setEditingProduct(undefined);
+          }
         }}
+        product={editingProduct}
       />
     </DashboardLayout>
   );

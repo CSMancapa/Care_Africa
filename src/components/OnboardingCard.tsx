@@ -2,26 +2,21 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ChevronRight } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/config/supabase";
 import { useState } from "react";
 import { toast } from "sonner";
+import { usePractice } from "@/context/PracticeContext";
+import { markSetupCompleted } from "@/lib/db/practiceSettings";
 
 export const OnboardingCard = () => {
   const navigate = useNavigate();
   const [isVisible, setIsVisible] = useState(true);
+  const { practice } = usePractice();
 
   const handleSetupClick = async () => {
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      if (!practice) return;
+      await markSetupCompleted(practice.id);
 
-      const { error } = await supabase
-        .from('practices')
-        .update({ setup_completed: true })
-        .eq('id', session.user.id);
-
-      if (error) throw error;
-      
       setIsVisible(false);
       navigate("/settings");
     } catch (error) {

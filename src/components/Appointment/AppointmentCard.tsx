@@ -8,10 +8,9 @@ import { cn } from '@/lib/utils'; // Utility for conditional classNames
 import { WaitingTimer } from '../Appointment/WaitingTimer';
 import { format } from 'date-fns';
 import { AppointmentDetailsModal } from './AppointmentDetailsModal';
-import { supabase } from '@/config/supabase';
 
 interface Service {
-  id: string;
+  id?: string;
   name: string;
   price: number;
 }
@@ -46,85 +45,12 @@ const AppointmentCard: React.FC<AppointmentCardProps> = ({ appointment, onUpdate
   const [currentWaitTime, setCurrentWaitTime] = useState<string>('00:00');
   const [isDetailsModalOpen, setIsDetailsModalOpen] = useState(false);
 
-  const awardPoints = async (appointmentId: string) => {
-    try {
-      // Get practice rewards percentage
-      const { data: practiceData, error: practiceError } = await supabase
-        .from('practices')
-        .select('rewards')
-        .eq('id', appointment.practice_id)
-        .single();
-
-      if (practiceError) throw practiceError;
-
-      // Calculate total amount from services
-      const totalAmount = appointment.services
-        .filter((service): service is Service => 
-          typeof service === 'object' && service !== null && 'price' in service
-        )
-        .reduce((sum, service) => sum + service.price, 0);
-
-      console.log('Total service amount:', totalAmount);
-      console.log('Practice rewards config:', practiceData.rewards);
-      
-      // Calculate points based on percentage
-      const rewardPercentage = practiceData?.rewards?.percentage_reward || 1;
-      console.log('Reward percentage:', rewardPercentage);
-      
-      const pointsToAward = Math.floor((totalAmount * rewardPercentage) / 100);
-      console.log('Points to award:', pointsToAward);
-
-      // Get current patient points
-      const { data: patientData, error: patientError } = await supabase
-        .from('patients')
-        .select('id, points')
-        .eq('email', appointment.patient_email)
-        .eq('practice_id', appointment.practice_id)
-        .single();
-
-      if (patientError || !patientData) throw patientError || new Error('Patient not found');
-
-      console.log('Current patient points:', patientData.points);
-      const newTotalPoints = (patientData.points || 0) + pointsToAward;
-      console.log('New total points will be:', newTotalPoints);
-
-      // Update patient points
-      const { data: updateData, error: updateError } = await supabase
-        .from('patients')
-        .update({ points: newTotalPoints })
-        .eq('id', patientData.id)
-        .eq('practice_id', appointment.practice_id)
-        .select();
-
-      if (updateError) throw updateError;
-      
-      console.log('Updated patient data:', updateData);
-      toast.success(`Awarded ${pointsToAward} points (${rewardPercentage}% of R${totalAmount})`);
-    } catch (error) {
-      console.error('Error awarding points:', error);
-      toast.error('Failed to award points');
-      throw error; // Re-throw to prevent status update
-    }
-  };
-
   const handleStatusChange = async (newStatus: Appointment['status']) => {
-    // Only award points when completing the appointment
-    if (newStatus === 'completed') {
-      try {
-        await awardPoints(appointment.id);
-        onUpdateStatus(appointment.id, newStatus);
-      } catch (error) {
-        console.error('Error completing appointment:', error);
-        toast.error('Failed to complete appointment');
-        return; // Don't update status if points award fails
-      }
+    // Points for a completed visit are awarded by the database (complete_appointment).
+    if (newStatus === 'in-room' && appointment.status === 'waiting') {
+      onUpdateStatus(appointment.id, newStatus, currentWaitTime);
     } else {
-      // For all other status changes, just update the status
-      if (newStatus === 'in-room' && appointment.status === 'waiting') {
-        onUpdateStatus(appointment.id, newStatus, currentWaitTime);
-      } else {
-        onUpdateStatus(appointment.id, newStatus);
-      }
+      onUpdateStatus(appointment.id, newStatus);
     }
 
     // Status change notifications
@@ -137,9 +63,6 @@ const AppointmentCard: React.FC<AppointmentCardProps> = ({ appointment, onUpdate
         break;
       case "in-room":
         toast.success(`${appointment.patient} moved to Consulting Room`);
-        break;
-      case "completed":
-        toast.success(`Completed ${appointment.patient}'s appointment`);
         break;
       case "cancelled":
         toast.success(`Cancelled ${appointment.patient}'s appointment`);
@@ -276,7 +199,7 @@ const AppointmentCard: React.FC<AppointmentCardProps> = ({ appointment, onUpdate
           ...appointment,
           services: appointment.services.filter((service): service is Service => 
             typeof service === 'object' && service !== null
-          ) as Service[]
+          ) as any[]
         }}
         isOpen={isDetailsModalOpen}
         onClose={() => setIsDetailsModalOpen(false)}

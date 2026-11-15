@@ -5,8 +5,7 @@ import { useState, useEffect } from "react";
 import { Check, Package, ChevronLeft, Coins, Tag } from "lucide-react";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
-import { toast } from "react-hot-toast";
-import { supabase } from "@/config/supabase";
+import { toast } from "sonner";
 import type { RewardItem } from '@/types/rewards';
 
 interface Service {
@@ -68,57 +67,31 @@ const generateRewardsForProduct = (product: Product): RewardItem[] => {
     {
       name: `15% off ${product.name}`,
       type: 'discount',
-      service_id: product.id,
+      product_id: product.id,
       points_required: Math.round(product.price * 1.5),
       discount_percentage: 15
     },
     {
       name: `25% off ${product.name}`,
       type: 'discount',
-      service_id: product.id,
+      product_id: product.id,
       points_required: Math.round(product.price * 2.5),
       discount_percentage: 25
     },
     {
       name: `50% off ${product.name}`,
       type: 'discount',
-      service_id: product.id,
+      product_id: product.id,
       points_required: Math.round(product.price * 5),
       discount_percentage: 50
     },
     {
       name: `Free ${product.name}`,
       type: 'free',
-      service_id: product.id,
+      product_id: product.id,
       points_required: product.price * 10
     }
   ];
-};
-
-const handleAddRewardTier = async (rewards: RewardItem[], practiceId: string, fetchRewards: () => void) => {
-  try {
-    const { data, error } = await supabase
-      .from('rewards')
-      .insert(rewards.map(reward => ({
-        name: reward.type === 'free' ? `Free ${reward.name}` : reward.name,
-        type: reward.type,
-        service_id: reward.service_id,
-        points_required: reward.points_required,
-        discount_percentage: reward.discount_percentage,
-        practice_id: practiceId,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      })))
-      .select();
-
-    if (error) throw error;
-
-    toast.success('Rewards added successfully');
-    fetchRewards();
-  } catch (error) {
-    console.error('Error adding rewards:', error);
-    toast.error('Failed to add rewards');
-  }
 };
 
 export function AddRewardTierModal({ isOpen, onClose, onAdd, services, products = [] }: AddRewardTierModalProps) {
@@ -137,6 +110,7 @@ export function AddRewardTierModal({ isOpen, onClose, onAdd, services, products 
     return selectedRewards.some(
       (r) =>
         r.service_id === reward.service_id &&
+        r.product_id === reward.product_id &&
         r.type === reward.type &&
         r.discount_percentage === reward.discount_percentage
     );
@@ -147,6 +121,7 @@ export function AddRewardTierModal({ isOpen, onClose, onAdd, services, products 
       setSelectedRewards(selectedRewards.filter(
         (r) =>
           !(r.service_id === reward.service_id &&
+            r.product_id === reward.product_id &&
             r.type === reward.type &&
             r.discount_percentage === reward.discount_percentage)
       ));

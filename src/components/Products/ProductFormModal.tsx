@@ -44,6 +44,7 @@ import {
 import { Card } from "@/components/ui/card";
 import { useDropzone } from "react-dropzone";
 import { createProduct, updateProduct } from "@/lib/db/products";
+import { toast } from "sonner";
 import { useCurrentPractice } from "@/hooks/useCurrentPractice";
 
 
@@ -199,9 +200,11 @@ const ProductFormModal: React.FC<ProductFormModalProps> = ({
       } else {
         await createProduct(productInput);
       }
+      toast.success(product ? "Product updated" : "Product added");
       onOpenChange(false);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error saving product:", error);
+      toast.error(error?.message || "Failed to save product");
     }
   };
 

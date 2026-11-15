@@ -1,8 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '@/config/supabase';
-import { toast } from 'react-hot-toast';
+import { toast } from 'sonner';
 import PhoneInput from '@/components/ui/phone-input';
+import { usePractice } from '@/context/PracticeContext';
+import {
+  loadPracticeSettings,
+  markSetupCompleted,
+  saveBusinessHours,
+  saveDoctors,
+  saveGeneral,
+  saveRewardRules,
+  saveServicesSection,
+  uploadPracticeLogo,
+} from '@/lib/db/practiceSettings';
 import { AddressAutocomplete } from '@/components/AddressAutocomplete';
 
 /// <reference types="@types/google.maps" />
@@ -131,8 +142,12 @@ const practiceCategories: PracticeCategoryOption[] = [
   { id: 'other', name: 'Other', icon: '➕' }
 ] as const;
 
+const TOTAL_STEPS = 4;
+
 export const Onboarding = () => {
   const navigate = useNavigate();
+  const { practice, loading: practiceLoading, refresh } = usePractice();
+  const practiceId = practice?.id ?? null;
   const [currentStep, setCurrentStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [practiceData, setPracticeData] = useState<PracticeData>({
@@ -164,8 +179,9 @@ export const Onboarding = () => {
     category: 'other' as PracticeCategory
   });
 
-  // Load existing practice data
+  // Load existing practice data (the practice was created at signup)
   useEffect(() => {
+    if (practiceLoading) return;
     const loadPracticeData = async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
@@ -173,26 +189,35 @@ export const Onboarding = () => {
           navigate('/login', { replace: true });
           return;
         }
+        if (!practiceId) {
+          toast.error('Your account is not linked to a practice yet');
+          return;
+        }
 
-        const { data: practice, error } = await supabase
-          .from('practices')
-          .select('*')
-          .eq('id', session.user.id)
-          .single();
-
-        if (error) throw error;
-
+        const practice = await loadPracticeSettings(practiceId);
         if (practice.setup_completed) {
           navigate('/', { replace: true });
           return;
         }
 
-        // Set any existing data
+        // Pre-fill anything already saved, keeping the form's defaults otherwise
         setPracticeData(prev => ({
           ...prev,
-          ...practice
+          address: practice.address || prev.address,
+          city: practice.city || prev.city,
+          province: practice.province || prev.province,
+          postal_code: practice.postal_code || prev.postal_code,
+          phone: practice.phone || prev.phone,
+          displayPicture: practice.display_picture ?? prev.displayPicture,
+          businessHours: (practice.business_hours as PracticeData['businessHours']) ?? prev.businessHours,
+          specialties: practice.specialties?.length ? practice.specialties : prev.specialties,
+          doctors: practice.doctors?.length ? (practice.doctors as DoctorProfile[]) : prev.doctors,
+          acceptedInsurances: practice.accepted_insurances?.length ? practice.accepted_insurances : prev.acceptedInsurances,
+          services: practice.services?.length ? practice.services : prev.services,
+          selectedRewardCampaigns: practice.reward_campaigns?.length ? practice.reward_campaigns : prev.selectedRewardCampaigns,
+          pointsRules: practice.points_rules ?? prev.pointsRules,
+          category: (practice.category as PracticeCategory) || prev.category,
         }));
-
       } catch (error) {
         console.error('Error loading practice data:', error);
         toast.error('Failed to load practice data');
@@ -200,33 +225,59 @@ export const Onboarding = () => {
     };
 
     loadPracticeData();
-  }, [navigate]);
+  }, [navigate, practiceId, practiceLoading]);
+
+  // "Continue" moves to the next step; only the last step saves everything.
+  const handleStepSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (currentStep < TOTAL_STEPS) {
+      setCurrentStep(step => step + 1);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+    handleFinalSubmission();
+  };
 
   const handleFinalSubmission = async () => {
+    const loadingToastId = toast.loading('Completing setup...');
     try {
       setLoading(true);
-      const loadingToastId = toast.loading('Completing setup...');
+      if (!practiceId) throw new Error('Your account is not linked to a practice');
+      const current = await loadPracticeSettings(practiceId);
 
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error('No active session');
-
-      // Update practice record with all onboarding data
-      const { error: updateError } = await supabase
-        .from('practices')
-        .update({
-          ...practiceData,
-          setup_completed: true,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', session.user.id);
-
-      if (updateError) throw updateError;
+      await saveGeneral(practiceId, {
+        name: current.name,
+        email: current.email,
+        phone: practiceData.phone,
+        address: practiceData.address,
+        city: practiceData.city,
+        province: practiceData.province,
+        postal_code: practiceData.postal_code,
+        display_picture: practiceData.displayPicture,
+        category: practiceData.category,
+      });
+      await saveBusinessHours(practiceId, practiceData.businessHours);
+      await saveServicesSection(practiceId, {
+        services: practiceData.services,
+        specialties: practiceData.specialties,
+        accepted_insurances: practiceData.acceptedInsurances,
+      });
+      await saveDoctors(practiceId, practiceData.doctors as any);
+      await saveRewardRules(practiceId, {
+        percentage_reward: current.percentage_reward ?? 1,
+        referral_points: current.referral_points ?? 100,
+        points_rules: practiceData.pointsRules,
+        reward_campaigns: practiceData.selectedRewardCampaigns,
+      });
+      await markSetupCompleted(practiceId);
+      await refresh();
 
       toast.dismiss(loadingToastId);
       toast.success('Practice setup completed!');
       navigate('/', { replace: true });
 
     } catch (error: any) {
+      toast.dismiss(loadingToastId);
       console.error('Submission error:', error);
       toast.error(error.message || 'Failed to complete setup');
     } finally {
@@ -407,33 +458,16 @@ export const Onboarding = () => {
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      try {
-        const fileExt = file.name.split('.').pop();
-        const fileName = `${Math.random()}.${fileExt}`;
-        const filePath = `practice-logos/${fileName}`;
-
-        // Upload to Supabase Storage
-        const { data, error } = await supabase.storage
-          .from('images')
-          .upload(filePath, file);
-
-        if (error) throw error;
-
-        // Get public URL
-        const { data: { publicUrl } } = supabase.storage
-          .from('images')
-          .getPublicUrl(filePath);
-
-        setPracticeData(prev => ({
-          ...prev,
-          displayPicture: publicUrl
-        }));
-        
-      } catch (error) {
-        console.error('Error uploading image:', error);
-        toast.error('Failed to upload image');
-      }
+    if (!file || !practiceId) return;
+    try {
+      const publicUrl = await uploadPracticeLogo(practiceId, file);
+      setPracticeData(prev => ({
+        ...prev,
+        displayPicture: publicUrl
+      }));
+    } catch (error) {
+      console.error('Error uploading image:', error);
+      toast.error('Failed to upload image');
     }
   };
 
@@ -887,7 +921,7 @@ export const Onboarding = () => {
             </div>
 
             <div className="col-span-9">
-              <form onSubmit={handleFinalSubmission} className="space-y-6">
+              <form onSubmit={handleStepSubmit} className="space-y-6">
                 {currentStep === 1 && (
                   <div className="bg-white rounded-xl shadow-sm p-8">
                     <div className="mb-8">
@@ -1539,12 +1573,23 @@ export const Onboarding = () => {
                   </div>
                 )}
 
-                <div className="mt-6">
+                <div className="mt-6 flex gap-3">
+                  {currentStep > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => setCurrentStep(step => step - 1)}
+                      disabled={loading}
+                      className="flex-1 py-2 px-4 border border-gray-300 rounded-md shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50"
+                    >
+                      Back
+                    </button>
+                  )}
                   <button
                     type="submit"
-                    className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                    disabled={loading}
+                    className="flex-1 flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-primary-foreground bg-primary hover:bg-primary/90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary disabled:opacity-60"
                   >
-                    {currentStep === 4 ? 'Complete Setup' : 'Continue'}
+                    {currentStep === TOTAL_STEPS ? (loading ? 'Saving…' : 'Complete Setup') : 'Continue'}
                   </button>
                 </div>
               </form>

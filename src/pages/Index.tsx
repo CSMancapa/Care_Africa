@@ -4,11 +4,14 @@ import { DashboardLayout } from "../components/Dashboard/DashboardLayout";
 import { Award, Users, Clock, Calendar, PlusCircle, ArrowRight, Timer, CalendarClock, Gift, Sparkles, TrendingUp, ChevronRight } from "lucide-react";
 import React, { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { format } from 'date-fns';
-import { supabase } from '@/config/supabase';
+import { format, formatDistanceToNow } from 'date-fns';
+import { listAppointments, updateAppointmentStatus } from '@/lib/db/appointments';
+import { createPatient, listPatients } from '@/lib/db/patients';
+import { listRecentClaims, rewardMetrics, type RecentClaim } from '@/lib/db/rewards';
 import AppointmentCard from '@/components/Appointment/AppointmentCard';
 import { Appointment } from '@/types/appointment';
 import { useCurrentPractice } from '@/hooks/useCurrentPractice';
+import { isSetupCompleted } from '@/lib/db/practiceSettings';
 import { Patient } from '@/types/patient';
 import AddPatientModal from '@/components/Patient/AddPatientModal';
 import { OnboardingCard } from '@/components/OnboardingCard';
@@ -46,7 +49,7 @@ const Dashboard: React.FC = () => {
   const [patients, setPatients] = useState<Patient[]>([]);
   const [loading, setLoading] = useState(false);
   const practiceId = useCurrentPractice();
-  const [averageWaitTime, setAverageWaitTime] = React.useState<number>(0);
+  const [averageWaitTime, setAverageWaitTime] = React.useState<number>(-1);
   const [stats, setStats] = React.useState<DashboardStats>({
     activePatients: 0,
     totalRewards: 0,
@@ -56,178 +59,65 @@ const Dashboard: React.FC = () => {
   const [isAddPatientModalOpen, setIsAddPatientModalOpen] = useState(false);
   const [setupCompleted, setSetupCompleted] = useState(false);
   
-  useEffect(() => {
-    if (practiceId) {
-      // Verify that appointments belong to current practice before setting them
-      const verifyAndFetchAppointments = async () => {
-        setLoading(true);
-        try {
-          const { data, error } = await supabase
-            .from('appointments')
-            .select('*')
-            .eq('practice_id', practiceId);
+  const [recentClaims, setRecentClaims] = useState<RecentClaim[]>([]);
 
-          if (error) throw error;
-          setAppointments(data || []);
-        } catch (error) {
-          console.error('Error fetching appointments:', error);
-          toast.error('Failed to fetch appointments');
-        } finally {
-          setLoading(false);
-        }
-      };
-
-      // Verify that patients belong to current practice before setting them
-      const verifyAndFetchPatients = async () => {
-        try {
-          const { data, error } = await supabase
-            .from('patients')
-            .select('*')
-            .eq('practice_id', practiceId);
-
-          if (error) throw error;
-          setPatients(data || []);
-        } catch (error) {
-          console.error('Error fetching patients:', error);
-          toast.error('Failed to fetch patients');
-        }
-      };
-
-      verifyAndFetchAppointments();
-      verifyAndFetchPatients();
-    } else {
-      // Clear data if no practice ID
+  const loadDashboard = async () => {
+    if (!practiceId) {
       setAppointments([]);
       setPatients([]);
+      return;
     }
+    setLoading(true);
+    try {
+      const [appts, members, claims, metrics] = await Promise.all([
+        listAppointments(practiceId),
+        listPatients(practiceId),
+        listRecentClaims(practiceId, 5),
+        rewardMetrics(practiceId),
+      ]);
+      setAppointments(appts as any);
+      setPatients(members);
+      setRecentClaims(claims.items);
+
+      // Average wait: from joining the waiting room to being seen
+      const waits = appts
+        .map(a => a.wait_duration)
+        .filter((w): w is string => !!w)
+        .map(w => { const [m, sec] = w.split(':').map(Number); return m + sec / 60; });
+      // -1 = no waits recorded yet; 0 = under a minute
+      setAverageWaitTime(waits.length ? Math.round(waits.reduce((x, y) => x + y, 0) / waits.length) : -1);
+
+      const today = new Date().toDateString();
+      setStats({
+        activePatients: members.filter(m => m.status === 'active').length,
+        totalRewards: metrics.totalClaims,
+        todaysAppointments: appts.filter(a => new Date(a.time).toDateString() === today).length,
+      });
+    } catch (error) {
+      console.error('Error loading dashboard:', error);
+      toast.error('Failed to load dashboard');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDashboard();
   }, [practiceId]);
 
   useEffect(() => {
-    fetchTodaysAppointments();
-    calculateAverageWaitTime();
-    fetchDashboardStats();
-    const loadPracticeSetupStatus = async () => {
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) return;
-
-        const { data: practice, error } = await supabase
-          .from('practices')
-          .select('setup_completed')
-          .eq('id', session.user.id)
-          .single();
-
-        if (error) throw error;
-        setSetupCompleted(practice?.setup_completed || false);
-      } catch (error) {
-        console.error('Error loading practice setup status:', error);
-      }
-    };
-
-    loadPracticeSetupStatus();
-  }, []);
-
-  const fetchTodaysAppointments = async () => {
     if (!practiceId) return;
-    
-    try {
-      const today = new Date();
-      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate()).toISOString();
-      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).toISOString();
+    isSetupCompleted(practiceId)
+      .then(setSetupCompleted)
+      .catch((error) => console.error('Error loading practice setup status:', error));
+  }, [practiceId]);
 
-      const { data, error } = await supabase
-        .from('appointments')
-        .select('*')
-        .eq('practice_id', practiceId)
-        .gte('time', startOfDay)
-        .lt('time', endOfDay)
-        .order('time', { ascending: true });
-
-      if (error) throw error;
-      setAppointments(data || []);
-    } catch (error) {
-      console.error('Error fetching appointments:', error);
-      toast.error('Failed to fetch appointments');
-    }
-  };
-
-  const calculateAverageWaitTime = async () => {
-    if (!practiceId) return;
-
-    try {
-      const { data, error } = await supabase
-        .from('appointments')
-        .select('wait_duration')
-        .eq('practice_id', practiceId)
-        .not('wait_duration', 'is', null);
-
-      if (error) throw error;
-
-      if (!data || data.length === 0) {
-        setAverageWaitTime(0);
-        return;
-      }
-
-      // Convert MM:SS format to minutes
-      const waitTimes = data.map(appointment => {
-        if (!appointment.wait_duration) return 0;
-        const [minutes, seconds] = appointment.wait_duration.split(':').map(Number);
-        return minutes + (seconds / 60);
-      });
-
-      // Calculate average
-      const average = waitTimes.length > 0
-        ? Math.round(waitTimes.reduce((a, b) => a + b, 0) / waitTimes.length)
-        : 0;
-
-      setAverageWaitTime(average);
-    } catch (error) {
-      console.error('Error calculating average wait time:', error);
-      toast.error('Failed to calculate average wait time');
-    }
-  };
-
-  const fetchDashboardStats = async () => {
-    if (!practiceId) return;
-
-    try {
-      const { data: activePatients, error: patientsError } = await supabase
-        .from('patients')
-        .select('id', { count: 'exact' })
-        .eq('practice_id', practiceId)
-        .eq('status', 'active');
-
-      if (patientsError) throw patientsError;
-
-      // Get today's appointments count
-      const today = new Date();
-      const startOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate()).toISOString();
-      const endOfDay = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1).toISOString();
-
-      const { count: appointmentsCount, error: appointmentsError } = await supabase
-        .from('appointments')
-        .select('id', { count: 'exact' })
-        .gte('time', startOfDay)
-        .lt('time', endOfDay);
-
-      if (appointmentsError) throw appointmentsError;
-
-      // Update stats
-      setStats({
-        activePatients: activePatients.length || 0,
-        totalRewards: 856, // You can update this with real data when available
-        todaysAppointments: appointmentsCount || 0
-      });
-
-    } catch (error) {
-      console.error('Error fetching dashboard stats:', error);
-      toast.error('Failed to fetch dashboard statistics');
-    }
-  };
+  const fetchDashboardStats = loadDashboard;
 
   // Helper function to format wait time
   const formatWaitTime = (minutes: number): string => {
-    if (minutes === 0) return 'No data';
+    if (minutes < 0) return 'No data';
+    if (minutes === 0) return 'Under 1 min';
     if (minutes < 60) return `${minutes} mins`;
     const hours = Math.floor(minutes / 60);
     const remainingMins = minutes % 60;
@@ -238,32 +128,17 @@ const Dashboard: React.FC = () => {
 
   const handleUpdateStatus = async (id: string, newStatus: Appointment['status']) => {
     try {
-      let updates: Partial<Appointment> = { 
-        status: newStatus,
-      };
-
-      // Add wait_start_time when moving to waiting status
-      if (newStatus === 'waiting') {
-        updates.wait_start_time = new Date().toISOString();
-      }
-
-      const { data, error } = await supabase
-        .from('appointments')
-        .update(updates)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      setAppointments(prev => prev.map(apt => 
-        apt.id === id ? data : apt
-      ));
-      
-      toast.success('Appointment status updated');
-    } catch (error) {
+      const { appointment, pointsAwarded } = await updateAppointmentStatus(id, newStatus);
+      setAppointments(prev => prev.map(apt => (apt.id === id ? (appointment as any) : apt)));
+      toast.success(
+        newStatus === 'completed' && pointsAwarded > 0
+          ? `Visit completed. ${appointment.patient} earned ${pointsAwarded} points`
+          : 'Appointment status updated'
+      );
+      if (newStatus === 'completed') loadDashboard();
+    } catch (error: any) {
       console.error('Error updating appointment status:', error);
-      toast.error('Failed to update status');
+      toast.error(error?.message || 'Failed to update status');
     }
   };
 
@@ -387,23 +262,15 @@ const Dashboard: React.FC = () => {
   `;
 
   const handleAddPatient = async (patientData: any) => {
+    if (!practiceId) return;
     try {
-      const { data, error } = await supabase
-        .from('patients')
-        .insert([patientData])
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      setPatients(prev => [...prev, data]);
-      toast.success('Patient added successfully');
-      
-      // Refresh dashboard stats
-      fetchDashboardStats();
-    } catch (error) {
+      const created = await createPatient(practiceId, patientData);
+      setPatients(prev => [...prev, created]);
+      toast.success('Member added successfully');
+      loadDashboard();
+    } catch (error: any) {
       console.error('Error adding patient:', error);
-      toast.error('Failed to add patient');
+      toast.error(error?.message || 'Failed to add member');
     }
   };
 
@@ -483,41 +350,24 @@ const Dashboard: React.FC = () => {
                 Manage Rewards <ChevronRight className="w-4 h-4" />
               </Button>
             </div>
-            {stats.totalRewards > 0 ? (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <Card className="p-4 bg-primary/5">
-                    <h3 className="font-medium text-primary mb-1">500 Points Tier</h3>
-                    <p className="text-sm text-gray-600 mb-3">Most Popular</p>
-                    <div className="flex items-center gap-2">
-                      <Award className="w-4 h-4 text-primary" />
-                      <span className="text-sm">12 Claimed Today</span>
-                    </div>
-                  </Card>
-                  <Card className="p-4 bg-secondary/5">
-                    <h3 className="font-medium text-secondary mb-1">1000 Points Tier</h3>
-                    <p className="text-sm text-gray-600 mb-3">Premium Rewards</p>
-                    <div className="flex items-center gap-2">
-                      <Award className="w-4 h-4 text-secondary" />
-                      <span className="text-sm">5 Claimed Today</span>
-                    </div>
-                  </Card>
-                </div>
-                <div className="mt-4">
-                  <h3 className="font-medium mb-3">Recent Claims</h3>
-                  {[1, 2, 3].map((i) => (
-                    <div key={i} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg mb-2">
-                      <div className="flex items-center gap-3">
-                        <Award className="w-5 h-5 text-primary" />
-                        <div>
-                          <p className="font-medium">Netflix Voucher</p>
-                          <p className="text-sm text-gray-600">500 points</p>
-                        </div>
+            {recentClaims.length > 0 ? (
+              <div className="space-y-2">
+                {recentClaims.map((claim) => (
+                  <div key={claim.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <Award className="w-5 h-5 text-primary" />
+                      <div>
+                        <p className="font-medium">{claim.reward_name}</p>
+                        <p className="text-sm text-gray-600">
+                          {claim.patient_name} · {claim.points_used} points{claim.is_redeemed ? ' · used' : ''}
+                        </p>
                       </div>
-                      <span className="text-sm text-gray-600">2h ago</span>
                     </div>
-                  ))}
-                </div>
+                    <span className="text-sm text-gray-600">
+                      {formatDistanceToNow(new Date(claim.created_at), { addSuffix: true })}
+                    </span>
+                  </div>
+                ))}
               </div>
             ) : (
               <RewardsEmptyState />

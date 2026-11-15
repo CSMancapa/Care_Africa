@@ -21,8 +21,9 @@ import {
 import { BarChart } from '@/components/sales/Charts/BarChart';
 import { PieChart } from '@/components/sales/Charts/PieChart';
 import OrderFormModal from '@/components/sales/Orders/OrderFormModal';
-import { toast } from 'react-hot-toast';
-import { supabase } from '@/config/supabase';
+import { toast } from 'sonner';
+import { listOrders } from '@/lib/db/sales';
+import { listProducts } from '@/lib/db/products';
 import { useCurrentPractice } from '@/hooks/useCurrentPractice';
 
 interface OrderItem {
@@ -71,29 +72,16 @@ export default function SalesPage() {
   const fetchOrders = async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase
-        .from('orders')
-        .select(`
-          id,
-          patient_name,
-          items,
-          total_amount,
-          payment_method,
-          status,
-          created_at
-        `)
-        .eq('practice_id', practiceId);
-
-      if (error) throw error;
-
-      const formattedOrders: Order[] = (data || []).map(order => ({
-        orderId: order.id,
-        customerName: order.patient_name || 'Unknown',
-        items: order.items || [],
-        totalAmount: order.total_amount,
-        paymentMethod: order.payment_method || 'IN_PRACTICE',
-        carePoints: Math.round(order.total_amount * 0.1),
-        createdAt: order.created_at
+      if (!practiceId) return;
+      const data = await listOrders(practiceId);
+      const formattedOrders: Order[] = data.map(order => ({
+        orderId: order.orderNumber,
+        customerName: order.customerName,
+        items: order.items,
+        totalAmount: order.total,
+        paymentMethod: 'IN_PRACTICE',
+        carePoints: order.pointsEarned,
+        createdAt: order.createdAt
       }));
 
       setOrders(formattedOrders);
@@ -107,12 +95,8 @@ export default function SalesPage() {
 
   const fetchProducts = async () => {
     try {
-      const { data, error } = await supabase
-        .from('products')
-        .select('*')
-        .eq('practice_id', practiceId);
-      if (error) throw error;
-      setProducts(data || []);
+      if (!practiceId) return;
+      setProducts(await listProducts(practiceId));
     } catch (error) {
       console.error('Error fetching products:', error);
     }
@@ -157,7 +141,7 @@ export default function SalesPage() {
       dataIndex: 'totalAmount',
       key: 'totalAmount',
       render: (amount: number) => (
-        <span className="font-medium text-gray-900">${formatNumber(amount)}</span>
+        <span className="font-medium text-gray-900">R{formatNumber(amount)}</span>
       ),
       sorter: (a: Order, b: Order) => a.totalAmount - b.totalAmount,
     },
@@ -249,35 +233,10 @@ export default function SalesPage() {
     }));
   };
 
-  const handleCreateOrder = async (data: { items: OrderItem[], patientId: string }) => {
-    try {
-      const { items, patientId } = data;
-      
-      // Create order in database
-      const { data: order, error } = await supabase
-        .from('orders')
-        .insert([{
-          patient_id: patientId,
-          items: items,
-          total_amount: items.reduce((sum, item) => {
-            const product = products.find(p => p.id === item.productId);
-            return sum + (product?.price || 0) * item.quantity;
-          }, 0),
-          status: 'completed',
-          practice_id: practiceId,
-          created_at: new Date().toISOString()
-        }])
-        .select()
-        .single();
-
-      if (error) throw error;
-      
-      toast.success('Order created successfully');
-      setIsOrderModalOpen(false);
-    } catch (error) {
-      console.error('Error creating order:', error);
-      toast.error('Failed to create order');
-    }
+  // The checkout form saves the sale itself (create_order); refresh afterwards.
+  const handleCreateOrder = () => {
+    fetchOrders();
+    fetchProducts();
   };
 
   const EmptyState = () => (
@@ -347,7 +306,7 @@ export default function SalesPage() {
                 <div>
                   <p className="text-sm text-gray-600">Total Sales</p>
                   <h3 className="text-2xl font-semibold text-gray-900">
-                    ${formatNumber(orders.reduce((sum, order) => sum + order.totalAmount, 0))}
+                    R{formatNumber(orders.reduce((sum, order) => sum + order.totalAmount, 0))}
                   </h3>
                 </div>
               </div>
@@ -375,7 +334,7 @@ export default function SalesPage() {
                 <div>
                   <p className="text-sm text-gray-600">Average Order Value</p>
                   <h3 className="text-2xl font-semibold text-gray-900">
-                    ${orders.length ? formatNumber(orders.reduce((sum, order) => sum + order.totalAmount, 0) / orders.length) : '0'}
+                    R{orders.length ? formatNumber(orders.reduce((sum, order) => sum + order.totalAmount, 0) / orders.length) : '0'}
                   </h3>
                 </div>
               </div>

@@ -19,6 +19,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Loader2 } from "lucide-react";
 import { Patient } from "@/types/patient";
 import { supabase } from "@/config/supabase";
+import { toUiPatient } from "@/lib/db/patients";
 
 interface PatientSearchSelectProps {
   value?: string;
@@ -28,12 +29,12 @@ interface PatientSearchSelectProps {
 const searchPatients = async (searchTerm: string): Promise<Patient[]> => {
   const { data, error } = await supabase
     .from('patients')
-    .select('*')
-    .ilike('name', `%${searchTerm}%`)
+    .select('id, practice_id, first_name, last_name, full_name, email, phone, address_line1, date_of_birth, points, is_active, created_at')
+    .ilike('full_name', `%${searchTerm}%`)
     .limit(10);
-  
+
   if (error) throw error;
-  return data || [];
+  return (data || []).map(toUiPatient);
 };
 
 export function PatientSearchSelect({ value, onChange }: PatientSearchSelectProps) {

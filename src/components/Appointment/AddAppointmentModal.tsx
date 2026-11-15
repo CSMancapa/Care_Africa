@@ -26,9 +26,10 @@ import {
 } from "lucide-react";
 import { Card } from '@/components/ui/card';
 import { useCurrentPractice } from '@/hooks/useCurrentPractice';
-import { toast } from 'react-hot-toast';
+import { toast } from 'sonner';
 import { Patient } from '@/types/patient';
-import { supabase } from '@/config/supabase';
+import { loadDoctors, loadServices } from '@/lib/db/practiceSettings';
+import { bookedTimes, lookupRewardCode } from '@/lib/db/appointments';
 import { useQuery } from '@tanstack/react-query';
 import { 
   Form,
@@ -76,7 +77,7 @@ interface AddAppointmentModalProps {
   patient?: Patient;
   isOpen: boolean;
   onClose: () => void;
-  onAdd: (appointmentData: AppointmentData) => void;
+  onAdd: (appointmentData: AppointmentData) => void | Promise<void>;
 }
 
 interface DateButtonProps {
@@ -87,6 +88,7 @@ interface DateButtonProps {
 
 const DateButton: React.FC<DateButtonProps> = ({ day, selected, onSelect }) => (
   <button
+    type="button"
     onClick={() => onSelect(day)}
     className={`flex flex-col items-center min-w-[80px] p-3 rounded-xl border transition-all
       ${isSameDay(selected, day) 
@@ -104,7 +106,7 @@ const formSchema = z.object({
   date: z.date(),
   time: z.string().min(1, "Time is required"),
   patient: z.string().min(1, "Patient name is required"),
-  email: z.string().email("Valid email is required"),
+  email: z.string().email("Enter a valid email").or(z.literal("")),
   phone: z.string().min(1, "Phone number is required"),
 });
 
@@ -112,41 +114,17 @@ const formSchema = z.object({
 const getDoctors = async (practiceId: string) => {
   if (!practiceId) return [];
   
-  const { data, error } = await supabase
-    .from('practices')
-    .select('doctors')
-    .eq('id', practiceId)
-    .single();
-
-  if (error) {
-    console.error('Error fetching doctors:', error);
-    throw error;
-  }
-
-  return data?.doctors || [];
+  return loadDoctors(practiceId);
 };
 
-// Add this function to fetch existing appointments
+// Times already booked for this doctor on the day (cancelled visits free their slot)
 const getExistingAppointments = async (doctorId: string, date: Date) => {
-  const startOfDay = new Date(date);
-  startOfDay.setHours(0, 0, 0, 0);
-  
-  const endOfDay = new Date(date);
-  endOfDay.setHours(23, 59, 59, 999);
-
-  const { data, error } = await supabase
-    .from('appointments')
-    .select('time')
-    .eq('doctor_id', doctorId)
-    .gte('time', startOfDay.toISOString())
-    .lte('time', endOfDay.toISOString());
-
-  if (error) {
+  try {
+    return await bookedTimes(doctorId, date);
+  } catch (error) {
     console.error('Error fetching appointments:', error);
     return [];
   }
-
-  return data?.map(apt => format(new Date(apt.time), 'HH:mm')) || [];
 };
 
 const AddAppointmentModal: React.FC<AddAppointmentModalProps> = ({
@@ -202,25 +180,8 @@ const AddAppointmentModal: React.FC<AddAppointmentModalProps> = ({
   const getPracticeServices = async (practiceId: string): Promise<Service[]> => {
     if (!practiceId) return [];
     
-    const { data, error } = await supabase
-      .from('practices')
-      .select('services')
-      .eq('id', practiceId)
-      .single();
-
-    if (error) {
-      console.error('Error fetching services:', error);
-      throw error;
-    }
-
-    // Transform the services to ensure each has an id
-    const servicesWithIds = (data?.services || []).map((service: Service) => ({
-      ...service,
-      id: service.id || `${practiceId}_${service.name}` // Better fallback ID format
-    }));
-
-    console.log('Fetched services:', servicesWithIds); // Debug log
-    return servicesWithIds;
+    // Services now live in their own table, each with a real id
+    return (await loadServices(practiceId)) as unknown as Service[];
   };
 
   // Query for services
@@ -241,22 +202,20 @@ const AddAppointmentModal: React.FC<AddAppointmentModalProps> = ({
 
   // Update the generateTimeSlots function
   const generateTimeSlots = useCallback(async (date: Date, doctorId: string) => {
-    const doctor = doctors.find(d => d.name === doctorId);
+    const doctor = doctors.find(d => d.id === doctorId);
     if (!doctor) return [];
 
-    const dayOfWeek = format(date, 'EEEE').toLowerCase() as keyof typeof doctor.availability;
-    const availability = doctor.availability[dayOfWeek];
+    // A doctor with no availability saved yet is treated as available 09:00–17:00.
+    const dayOfWeek = format(date, 'EEEE').toLowerCase();
+    const availability = (doctor.availability as any)?.[dayOfWeek];
 
-    if (!availability.isAvailable) {
+    if (availability && availability.isAvailable === false) {
       return [];
     }
 
-    const startTime = availability.usePracticeHours 
-      ? "09:00" 
-      : availability.customHours.start;
-    const endTime = availability.usePracticeHours
-      ? "17:00" 
-      : availability.customHours.end;
+    const useCustom = availability && !availability.usePracticeHours && availability.customHours;
+    const startTime = useCustom ? availability.customHours.start : "09:00";
+    const endTime = useCustom ? availability.customHours.end : "17:00";
 
     // Generate all possible slots
     const slots: string[] = [];
@@ -291,142 +250,86 @@ const AddAppointmentModal: React.FC<AddAppointmentModalProps> = ({
     updateTimeSlots();
   }, [selectedDoctor, date, generateTimeSlots, form]);
 
-  // Update handleSubmit to include reward information
+  // Build the booking: each service with the price actually charged after any reward
   const handleSubmit = async (formValues: z.infer<typeof formSchema>) => {
     try {
-      const selectedServicesData = services
-        .filter(service => selectedServices.includes(service.id))
-        .map(service => ({
-          ...service,
-          // Add reward information if a reward was applied to this service
-          applied_reward: service.id === appliedReward?.service_id ? {
-            type: appliedReward.type,
-            discount_percentage: appliedReward.type === 'discount' ? appliedReward.discount_percentage : undefined
-          } : undefined
-        }));
-
-      const appointmentData = {
-        practice_id: practice,
+      const chosen = services.filter(service => selectedServices.includes(service.id));
+      const appointmentData: AppointmentData = {
         patient: formValues.patient,
         patient_email: formValues.email,
         patient_phone: formValues.phone,
+        patient_id: patient?.id,
         time: `${format(formValues.date, 'yyyy-MM-dd')}T${formValues.time}:00`,
-        status: 'scheduled' as const,
-        services: selectedServicesData,
-        // Include the total amount after discounts
-        total_amount: selectedServicesData.reduce((sum, service) => {
-          if (service.applied_reward) {
-            if (service.applied_reward.type === 'free') {
-              return sum;
-            } else if (service.applied_reward.type === 'discount' && service.applied_reward.discount_percentage) {
-              return sum + (service.price * (1 - service.applied_reward.discount_percentage / 100));
-            }
+        doctor_id: selectedDoctor || undefined,
+        services: chosen.map(service => {
+          let price = Number(service.price) || 0;
+          if (appliedReward && service.id === appliedReward.service_id) {
+            price = appliedReward.type === 'free'
+              ? 0
+              : price * (1 - (appliedReward.discount_percentage ?? 0) / 100);
           }
-          return sum + service.price;
-        }, 0),
-        doctor_id: selectedDoctor
+          return { id: service.id, name: service.name, price: Math.round(price * 100) / 100 };
+        }),
+        reward_code: appliedReward ? rewardCodes[appliedReward.service_id ?? ''] : undefined,
       };
 
-      onAdd(appointmentData);
+      await onAdd(appointmentData);
     } catch (error) {
       console.error('Error creating appointment:', error);
-      toast.error('Failed to create appointment');
     }
   };
 
-  // Update validateRewardCode to log more information
+  // Check a reward code against the service it is typed next to. The code is
+  // only used up when the booking is saved, so closing the form doesn't waste it.
   const validateRewardCode = async (code: string, serviceId: string) => {
     setIsApplyingCode(true);
     try {
-      console.log('Starting validation for:', { code, serviceId });
-
       if (!code.trim()) {
         toast.error('Please enter a reward code');
         return;
       }
+      if (!practice) return;
 
-      const { data: claim, error: claimError } = await supabase
-        .from('reward_claims')
-        .select('*, rewards (*)')
-        .eq('redemption_code', code)
-        .single();
-
-      console.log('Initial claim query result:', { claim, claimError });
-
-      if (claimError || !claim) {
-        toast.error('Invalid reward code');
-        return;
-      }
-
-      if (claim.is_redeemed) {
-        toast.error('This reward code has already been redeemed');
-        setRewardCodes(prev => ({
-          ...prev,
-          [serviceId]: ''
-        }));
-        return;
-      }
-
-      const reward = claim.rewards;
+      const claim = await lookupRewardCode(practice, code);
       const currentService = services.find(s => s.id === serviceId);
       if (!currentService) {
         toast.error('Service not found');
         return;
       }
-
-      const rewardServiceName = reward.name.split(' off ')[1]?.trim() || reward.name.split('Free ')[1]?.trim();
-      const currentServiceName = currentService.name.trim();
-
-      if (rewardServiceName !== currentServiceName) {
-        toast.error(`This reward code is only valid for ${rewardServiceName}`);
+      if (patient?.id && claim.patient_id !== patient.id) {
+        toast.error('This reward code belongs to a different member');
+        return;
+      }
+      if (claim.product_id) {
+        toast.error('This reward is for a product. Use it at the till under Sales.');
+        return;
+      }
+      if (claim.service_id && claim.service_id !== serviceId) {
+        const forService = services.find(s => s.id === claim.service_id)?.name ?? 'another service';
+        toast.error(`This reward code is only valid for ${forService}`);
         return;
       }
 
-      // Immediately update is_redeemed to true
-      const { error: updateError } = await supabase
-        .from('reward_claims')
-        .update({ 
-          is_redeemed: true,
-          status: 'claimed',
-          updated_at: new Date().toISOString()
-        })
-        .eq('redemption_code', code);
+      setRewardCodes(prev => ({ ...prev, [serviceId]: code.trim().toUpperCase() }));
 
-      if (updateError) {
-        console.error('Error updating reward status:', updateError);
-        toast.error('Failed to apply reward');
-        return;
-      }
-
-      // Apply the reward
-      setRewardCodes(prev => ({
-        ...prev,
-        [serviceId]: code
-      }));
-
-      if (reward.type === 'free') {
+      if (claim.reward_type === 'discount' && claim.discount_percentage) {
+        const discount = (currentService.price * claim.discount_percentage) / 100;
+        setDiscountAmount(discount);
         setAppliedReward({
-          id: reward.id,
-          type: 'free',
-          service_id: serviceId
-        });
-        setDiscountAmount(currentService.price);
-        toast.success('Free service reward applied!');
-      } else if (reward.type === 'discount' && reward.discount_percentage) {
-        const discountAmount = (currentService.price * reward.discount_percentage) / 100;
-        setDiscountAmount(discountAmount);
-        setAppliedReward({
-          id: reward.id,
+          id: claim.reward_id,
           type: 'discount',
           service_id: serviceId,
-          discount_percentage: reward.discount_percentage
+          discount_percentage: claim.discount_percentage,
         });
-        toast.success(`Discount of ${reward.discount_percentage}% applied!`);
+        toast.success(`Discount of ${claim.discount_percentage}% applied!`);
+      } else {
+        setAppliedReward({ id: claim.reward_id, type: 'free', service_id: serviceId });
+        setDiscountAmount(currentService.price);
+        toast.success('Free service reward applied!');
       }
-
-    } catch (error) {
-      console.error('Error validating reward code:', error);
-      toast.error('Failed to validate reward code');
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to validate reward code');
+      setRewardCodes(prev => ({ ...prev, [serviceId]: '' }));
     } finally {
       setIsApplyingCode(false);
     }
@@ -579,6 +482,7 @@ const AddAppointmentModal: React.FC<AddAppointmentModalProps> = ({
                               <Popover>
                                 <PopoverTrigger asChild>
                                   <Button
+                                    type="button"
                                     variant="ghost"
                                     size="sm"
                                     className="flex items-center gap-2"
@@ -624,8 +528,8 @@ const AddAppointmentModal: React.FC<AddAppointmentModalProps> = ({
                                 </SelectTrigger>
                                 <SelectContent>
                                   {(doctors || []).map((doctor) => (
-                                    <SelectItem key={doctor.name} value={doctor.name}>
-                                      {doctor.name} - {doctor.specialization}
+                                    <SelectItem key={doctor.id} value={doctor.id}>
+                                      {doctor.name}{doctor.specialization ? ` - ${doctor.specialization}` : ''}
                                     </SelectItem>
                                   ))}
                                 </SelectContent>

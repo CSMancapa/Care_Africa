@@ -25,12 +25,10 @@ const formatDate = (date: string) => {
 export default function ViewPatientModal({ patient, appointments, isOpen, onClose }: ViewPatientModalProps) {
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   
-  console.log('Patient data:', patient);
-  console.log('Appointments:', appointments);
 
   // Filter appointments for this patient
   const patientAppointments = appointments?.filter(
-    (appointment) => appointment.patient_email === patient.email
+    (appointment) => appointment.patient_id === patient.id
   );
 
   return (

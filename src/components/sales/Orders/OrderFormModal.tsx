@@ -12,12 +12,15 @@ import { Package, Check, Search, User, Minus, Plus } from "lucide-react";
 import { Card } from '@/components/ui/card';
 import { useCurrentPractice } from '@/hooks/useCurrentPractice';
 import { toast } from 'sonner';
-import { supabase } from '@/config/supabase';
 import { Patient } from '@/types/patient';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { CreditCard, Gift, ChevronRight } from "lucide-react";
 import { PatientSearchSelect } from './PatientSearchSelect';
+import { listProducts } from "@/lib/db/products";
+import { listPatients } from "@/lib/db/patients";
+import { lookupRewardCode } from "@/lib/db/appointments";
+import { createOrder } from "@/lib/db/sales";
 
 interface Product {
   id: string;
@@ -44,14 +47,8 @@ interface PaymentMethod {
 interface OrderFormModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSubmit: (data: {
-    items: OrderItem[];
-    patientId: string;
-    patientName: string;
-    status: 'completed';
-    paymentMethod: string;
-    totalAmount: number;
-  }) => void;
+  /** Called after the sale is saved, e.g. to refresh the orders list. */
+  onSubmit?: () => void;
 }
 
 const OrderFormModal: React.FC<OrderFormModalProps> = ({
@@ -80,24 +77,30 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
   } | null>(null);
   const [discountAmount, setDiscountAmount] = useState(0);
 
+  // Start every checkout fresh, with current stock and members.
   useEffect(() => {
+    if (!isOpen) return;
+    setSelectedItems([]);
+    setSelectedPatient(null);
+    setPatientSearchQuery('');
+    setSearchQuery('');
+    setStep('items');
+    setPaymentMethod(null);
+    setRewardCode('');
+    setAppliedReward(null);
+    setDiscountAmount(0);
     if (practiceId) {
       fetchProducts();
       fetchPatients();
     }
-  }, [practiceId]);
+  }, [isOpen, practiceId]);
 
   const fetchProducts = async () => {
     if (!practiceId) return;
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('products')
-        .select('id, name, price, current_stock, images')
-        .eq('practice_id', practiceId);
-
-      if (error) throw error;
-      setProducts(data || []);
+      if (!practiceId) return;
+      setProducts((await listProducts(practiceId)) as any);
     } catch (error) {
       console.error('Error fetching products:', error);
       toast.error('Failed to fetch products');
@@ -109,13 +112,8 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
   const fetchPatients = async () => {
     if (!practiceId) return;
     try {
-      const { data, error } = await supabase
-        .from('patients')
-        .select('*')
-        .eq('practice_id', practiceId);
-
-      if (error) throw error;
-      setPatients(data || []);
+      if (!practiceId) return;
+      setPatients(await listPatients(practiceId));
     } catch (error) {
       console.error('Error fetching patients:', error);
       toast.error('Failed to fetch patients');
@@ -179,43 +177,42 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
     setPaymentMethod({ id: method, type: method });
   };
 
+  // Check a reward code against the basket. It's used up only when the sale
+  // is saved, and the database works out the final discount.
   const validateRewardCode = async (code: string) => {
     setIsApplyingCode(true);
     try {
-      const { data: claim, error: claimError } = await supabase
-        .from('reward_claims')
-        .select(`
-          *,
-          rewards (*)
-        `)
-        .eq('redemption_code', code)
-        .eq('status', 'claimed')
-        .single();
-
-      if (claimError || !claim) {
-        toast.error('Invalid or expired reward code');
+      if (!practiceId) return;
+      const claim = await lookupRewardCode(practiceId, code);
+      if (claim.service_id) {
+        toast.error('This reward is for a service. Use it when booking the visit.');
+        return;
+      }
+      if (selectedPatient?.id && claim.patient_id !== selectedPatient.id) {
+        toast.error('This reward code belongs to a different member');
+        return;
+      }
+      const line = claim.product_id ? selectedItems.find(i => i.productId === claim.product_id) : undefined;
+      if (claim.product_id && !line) {
+        const name = products.find(p => p.id === claim.product_id)?.name ?? 'the rewarded product';
+        toast.error(`Add ${name} to the basket to use this reward`);
         return;
       }
 
-      const reward = claim.rewards;
-
-      if (claim.status === 'redeemed') {
-        toast.error('This reward code has already been used');
-        return;
+      const subtotal = selectedItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
+      let discount = 0;
+      if (claim.reward_type === 'free' && line) {
+        discount = line.price;
+      } else if (claim.reward_type === 'discount') {
+        const base = line ? line.price * line.quantity : subtotal;
+        discount = Math.round(base * (claim.discount_percentage ?? 0)) / 100;
       }
-
-      if (reward.type === 'voucher') {
-        const discountAmount = (getTotal() * (reward.discount_percentage || 0)) / 100;
-        setDiscountAmount(discountAmount);
-        setAppliedReward(reward);
-        toast.success(`Discount of ${reward.discount_percentage}% applied!`);
-      } else {
-        toast.error('This reward code is not valid for product purchases');
-      }
-
-    } catch (error) {
-      console.error('Error validating reward code:', error);
-      toast.error('Failed to validate reward code');
+      setDiscountAmount(discount);
+      setAppliedReward({ id: claim.reward_id, name: claim.reward_name } as any);
+      setRewardCode(code.trim().toUpperCase());
+      toast.success(`${claim.reward_name} applied: R${discount.toFixed(2)} off`);
+    } catch (error: any) {
+      toast.error(error?.message || 'Failed to validate reward code');
     } finally {
       setIsApplyingCode(false);
     }
@@ -223,81 +220,29 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
 
   const handleSubmit = async () => {
     try {
-      const submissionData = {
-        items: selectedItems.map(item => {
-          const product = products.find(p => p.id === item.productId);
-          if (!product) {
-            throw new Error(`Product not found for ID: ${item.productId}`);
-          }
-          return {
-            productId: item.productId,
-            quantity: item.quantity,
-            price: product.price,
-            productName: product.name,
-          };
-        }),
-        patientId: selectedPatient?.id || '',
-        patientName: selectedPatient?.name || '',
-        status: 'completed',
-        paymentMethod: paymentMethod?.type || '',
-        totalAmount: getTotal()
-      };
-      
-      console.log('Submitting Order:', submissionData);
-
-      const { data: order, error: orderError } = await supabase
-        .from('orders')
-        .insert({
-          practice_id: practiceId,
-          patient_id: submissionData.patientId,
-          patient_name: submissionData.patientName,
-          status: submissionData.status,
-          payment_method: submissionData.paymentMethod,
-          total_amount: submissionData.totalAmount,
-          items: submissionData.items.map(item => ({
-            id: item.productId,
-            name: item.productName,
-            price: item.price,
-            quantity: item.quantity
-          }))
-        })
-        .select()
-        .single();
-
-      if (orderError) throw orderError;
-
-      for (const item of submissionData.items) {
-        const { data: product } = await supabase
-          .from('products')
-          .select('current_stock')
-          .eq('id', item.productId)
-          .single();
-
-        const { error: stockError } = await supabase
-          .from('products')
-          .update({ 
-            current_stock: (product?.current_stock || 0) - item.quantity
-          })
-          .eq('id', item.productId);
-
-        if (stockError) throw stockError;
+      if (!practiceId) return;
+      if (selectedItems.length === 0) {
+        toast.error('Add at least one product');
+        return;
       }
+      const result = await createOrder(practiceId, {
+        patientId: selectedPatient?.id ?? null,
+        items: selectedItems.map(item => ({ productId: item.productId, quantity: item.quantity })),
+        paymentMethod: paymentMethod?.type,
+        rewardCode: appliedReward ? rewardCode : undefined,
+      });
 
-      if (appliedReward && rewardCode) {
-        const { error: updateError } = await supabase
-          .from('reward_claims')
-          .update({ status: 'redeemed' })
-          .eq('redemption_code', rewardCode);
-
-        if (updateError) throw updateError;
-      }
-
-      toast.success(`Order completed for ${submissionData.patientName}`);
+      const who = selectedPatient?.name ?? 'walk-in customer';
+      toast.success(
+        result.pointsAwarded > 0
+          ? `Order ${result.orderNumber} saved for ${who}: R${result.total.toFixed(2)}, ${result.pointsAwarded} points earned`
+          : `Order ${result.orderNumber} saved: R${result.total.toFixed(2)}`
+      );
+      onSubmit?.();
       onClose();
-      
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error creating order:', error);
-      toast.error('Failed to create order');
+      toast.error(error?.message || 'Failed to create order');
     }
   };
 
@@ -385,7 +330,7 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
                           <div className="flex-1 min-w-0">
                             <h4 className="font-medium truncate">{product.name}</h4>
                             <p className="text-sm text-muted-foreground">
-                              ${product.price.toFixed(2)}
+                              R{product.price.toFixed(2)}
                             </p>
                             <div className="mt-2 flex items-center gap-2">
                               <div className="flex items-center">
@@ -448,11 +393,11 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
                           <div className="min-w-0">
                             <p className="font-medium truncate">{product.name}</p>
                             <p className="text-sm text-muted-foreground">
-                              ${product.price.toFixed(2)} × {item.quantity}
+                              R{product.price.toFixed(2)} × {item.quantity}
                             </p>
                           </div>
                           <p className="font-medium flex-none">
-                            ${(product.price * item.quantity).toFixed(2)}
+                            R{(product.price * item.quantity).toFixed(2)}
                           </p>
                         </div>
                       </Card>
@@ -462,7 +407,7 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
                 <div className="flex-none p-3 border-t bg-background">
                   <div className="flex justify-between items-center font-medium">
                     <span>Total</span>
-                    <span>${getTotal().toFixed(2)}</span>
+                    <span>R{getTotal().toFixed(2)}</span>
                   </div>
                 </div>
               </div>
@@ -510,7 +455,7 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
                     >
                       <div className="flex items-center gap-3">
                         {method === 'credit_card' && <CreditCard className="w-4 h-4" />}
-                        <span className="font-medium capitalize">{method.replace('_', ' ')}</span>
+                        <span className="font-medium">{({ credit_card: 'Card', cash: 'Cash', eft: 'EFT' } as Record<string, string>)[method]}</span>
                       </div>
                     </Card>
                   ))}
@@ -545,16 +490,16 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
                 <div className="space-y-2">
                   <div className="flex justify-between text-sm">
                     <span>Subtotal</span>
-                    <span>${getTotal().toFixed(2)}</span>
+                    <span>R{(getTotal() + discountAmount).toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span>Discount</span>
-                    <span>${discountAmount.toFixed(2)}</span>
+                    <span>{discountAmount > 0 ? '−' : ''}R{discountAmount.toFixed(2)}</span>
                   </div>
                   <div className="border-t pt-2 mt-2">
                     <div className="flex justify-between font-medium">
                       <span>Total</span>
-                      <span>${getTotal().toFixed(2)}</span>
+                      <span>R{getTotal().toFixed(2)}</span>
                     </div>
                   </div>
                 </div>

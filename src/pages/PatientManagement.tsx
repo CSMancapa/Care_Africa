@@ -4,7 +4,8 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PlusCircle, Search, Users, Star, Calendar, Activity, ChevronLeft, ChevronRight, UserPlus, HeartPulse, Stethoscope, UsersRound, Upload } from "lucide-react";
-import { supabase } from '@/config/supabase';
+import { createPatient, listPatients } from '@/lib/db/patients';
+import { listAppointments } from '@/lib/db/appointments';
 import { Patient } from '@/types/patient';
 import { toast } from 'sonner';
 import PatientCard from '@/components/Patient/PatientCard';
@@ -37,13 +38,7 @@ const PatientManagement: React.FC = () => {
 
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from('patients')
-        .select('*, dateOfBirth, contact_number, address, reward_claims')
-        .eq('practice_id', practiceId);
-
-      if (error) throw error;
-      setPatients(data || []);
+      setPatients(await listPatients(practiceId));
     } catch (error) {
       console.error('Error fetching patients:', error);
       toast.error('Failed to fetch patients');
@@ -55,13 +50,7 @@ const PatientManagement: React.FC = () => {
   const fetchAppointments = async () => {
     if (!practiceId) return;
     try {
-      const { data, error } = await supabase
-        .from('appointments')
-        .select('*')
-        .eq('practice_id', practiceId);
-      
-      if (error) throw error;
-      setAppointments(data || []);
+      setAppointments((await listAppointments(practiceId)) as any);
     } catch (error) {
       console.error('Error fetching appointments:', error);
       toast.error('Failed to fetch appointments');
@@ -75,20 +64,16 @@ const PatientManagement: React.FC = () => {
         return;
       }
 
-      const { data, error } = await supabase
-        .from('patients')
-        .insert([{
-          ...patientData,
-          practice_id: practiceId,
-          created_at: new Date().toISOString(),
-          reward_claims: []
-        }])
-        .select()
-        .single();
+      const created = await createPatient(practiceId, {
+        name: patientData.name ?? '',
+        email: patientData.email,
+        contact_number: patientData.contact_number,
+        dateOfBirth: patientData.dateOfBirth,
+        gender: (patientData as any).gender,
+        address: patientData.address,
+      });
 
-      if (error) throw error;
-
-      setPatients(prev => [...prev, data]);
+      setPatients(prev => [...prev, created]);
       toast.success('Member added successfully');
       setIsModalOpen(false);
     } catch (error: any) {
@@ -110,7 +95,7 @@ const PatientManagement: React.FC = () => {
   const totalPages = Math.ceil(filteredPatients.length / patientsPerPage);
 
   const activePatients = patients.filter(patient => patient.status === 'active').length;
-  const totalAppointments = patients.reduce((sum, patient) => sum + (patient.appointmentCount || 0), 0);
+  const totalAppointments = appointments.filter(apt => apt.status === 'completed').length;
   const totalPoints = patients.reduce((sum, patient) => sum + (patient.points || 0), 0);
 
   const EmptyState = () => (
@@ -343,7 +328,8 @@ const PatientManagement: React.FC = () => {
                 <PatientCard 
                   key={patient.id} 
                   patient={patient}
-                  appointments={appointments.filter(apt => apt.patient_email === patient.email)}
+                  onSchedule={() => { fetchAppointments(); fetchPatients(); }}
+                  appointments={appointments.filter(apt => apt.patient_id === patient.id)}
                   onViewDetails={() => {
                     setSelectedPatient(patient);
                     setIsViewModalOpen(true);
@@ -393,7 +379,7 @@ const PatientManagement: React.FC = () => {
       {selectedPatient && (
         <ViewPatientModal
           patient={selectedPatient}
-          appointments={appointments.filter(apt => apt.patient_email === selectedPatient.email)}
+          appointments={appointments.filter(apt => apt.patient_id === selectedPatient.id)}
           isOpen={isViewModalOpen}
           onClose={() => setIsViewModalOpen(false)}
         />

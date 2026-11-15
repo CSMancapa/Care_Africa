@@ -14,6 +14,16 @@ import { useNavigate } from 'react-router-dom';
 import { Checkbox } from '@/components/ui/checkbox';
 import { AddressAutocomplete } from '@/components/AddressAutocomplete';
 import { BrandingSettings } from '@/components/Settings/BrandingSettings';
+import { usePractice } from '@/context/PracticeContext';
+import {
+  loadPracticeSettings,
+  saveBusinessHours,
+  saveDoctors,
+  saveGeneral,
+  saveRewardRules,
+  saveServicesSection,
+  uploadPracticeLogo,
+} from '@/lib/db/practiceSettings';
 
 // Import your types from Onboarding or create a separate types file
 import type { PracticeData, BusinessHours, DoctorProfile, ServicePrice } from '@/types/practice';
@@ -39,28 +49,25 @@ const days = [
 
 export default function Settings() {
   const navigate = useNavigate();
+  const { practice, loading: practiceLoading, refresh } = usePractice();
+  const practiceId = practice?.id ?? null;
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [practiceData, setPracticeData] = useState<PracticeData | null>(null);
 
   useEffect(() => {
-    loadPracticeData();
-  }, []);
+    if (practiceLoading) return;
+    if (!practiceId) {
+      setLoading(false);
+      return;
+    }
+    loadPracticeData(practiceId);
+  }, [practiceId, practiceLoading]);
 
-  const loadPracticeData = async () => {
+  const loadPracticeData = async (id: string) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('No user found');
-
-      const { data: practice, error } = await supabase
-        .from('practices')
-        .select('*, doctors')
-        .eq('id', user.id)
-        .single();
-
-      if (error) throw error;
-
-      setPracticeData(practice);
+      setLoading(true);
+      setPracticeData(await loadPracticeSettings(id));
     } catch (error) {
       console.error('Error loading practice data:', error);
       toast.error('Failed to load practice data');
@@ -69,24 +76,18 @@ export default function Settings() {
     }
   };
 
-  const handleSave = async (section: keyof PracticeData, data: any) => {
+  /** Runs one save, then reloads so every tab shows what the database holds. */
+  const runSave = async (save: (id: string) => Promise<void>, refreshSidebar = false) => {
+    if (!practiceId) return;
     try {
       setSaving(true);
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) throw new Error('No user found');
-
-      const { error } = await supabase
-        .from('practices')
-        .update({ [section]: data })
-        .eq('id', user.id);
-
-      if (error) throw error;
-
-      setPracticeData(prev => prev ? { ...prev, [section]: data } : null);
+      await save(practiceId);
+      setPracticeData(await loadPracticeSettings(practiceId));
+      if (refreshSidebar) await refresh();
       toast.success('Settings updated successfully');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error saving settings:', error);
-      toast.error('Failed to save settings');
+      toast.error(error?.message || 'Failed to save settings');
     } finally {
       setSaving(false);
     }
@@ -148,20 +149,7 @@ export default function Settings() {
           <TabsContent value="general">
             <GeneralSettings 
               practiceData={practiceData} 
-              onSave={async (data) => {
-                const { name, email, phone, address, city, province, postal_code, display_picture, category } = data;
-                await Promise.all([
-                  handleSave('name', name),
-                  handleSave('email', email),
-                  handleSave('phone', phone),
-                  handleSave('address', address),
-                  handleSave('city', city),
-                  handleSave('province', province),
-                  handleSave('postal_code', postal_code),
-                  handleSave('display_picture', display_picture),
-                  handleSave('category', category)
-                ]);
-              }}
+              onSave={(data) => runSave((id) => saveGeneral(id, data), true)}
               saving={saving}
             />
           </TabsContent>
@@ -169,7 +157,7 @@ export default function Settings() {
           <TabsContent value="hours">
             <BusinessHoursSettings 
               practiceData={practiceData} 
-              onSave={(data) => handleSave('business_hours', data)}
+              onSave={(data) => runSave((id) => saveBusinessHours(id, data))}
               saving={saving}
             />
           </TabsContent>
@@ -177,7 +165,7 @@ export default function Settings() {
           <TabsContent value="services">
             <ServicesSettings 
               practiceData={practiceData} 
-              onSave={(data) => handleSave('services', data)}
+              onSave={(data) => runSave((id) => saveServicesSection(id, data))}
               saving={saving}
             />
           </TabsContent>
@@ -185,12 +173,10 @@ export default function Settings() {
           <TabsContent value="rewards">
             <RewardsSettings 
               practiceData={practiceData} 
-              onSave={async (data) => {
-                await handleSave('rewards', {
-                  percentage_reward: parseFloat(data.percentage_reward),
-                  referral_points: parseInt(data.referral_points)
-                });
-              }}
+              onSave={(data) => runSave((id) => saveRewardRules(id, {
+                percentage_reward: parseFloat(data.percentage_reward) || 0,
+                referral_points: parseInt(data.referral_points) || 0,
+              }))}
               saving={saving}
             />
           </TabsContent>
@@ -198,7 +184,7 @@ export default function Settings() {
           <TabsContent value="doctors">
             <DoctorsSettings 
               practiceData={practiceData} 
-              onSave={(data) => handleSave('doctors', data.doctors)}
+              onSave={(data) => runSave((id) => saveDoctors(id, data.doctors))}
               saving={saving}
             />
           </TabsContent>
@@ -214,6 +200,7 @@ export default function Settings() {
 
 // Individual section components
 function GeneralSettings({ practiceData, onSave, saving }: SettingsSectionProps) {
+  const { practice } = usePractice();
   const [formData, setFormData] = useState({
     name: practiceData?.name || '',
     email: practiceData?.email || '',
@@ -247,30 +234,16 @@ function GeneralSettings({ practiceData, onSave, saving }: SettingsSectionProps)
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     try {
       const file = e.target.files?.[0];
-      if (!file) return;
-
+      if (!file || !practice) return;
       setUploading(true);
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${crypto.randomUUID()}.${fileExt}`;
-      const filePath = `practice-logos/${fileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from('images')
-        .upload(filePath, file);
-
-      if (uploadError) throw uploadError;
-
-      const { data: { publicUrl } } = supabase.storage
-        .from('images')
-        .getPublicUrl(filePath);
-
+      const publicUrl = await uploadPracticeLogo(practice.id, file);
       setFormData(prev => ({
         ...prev,
         display_picture: publicUrl
       }));
     } catch (error) {
       console.error('Error uploading image:', error);
-      toast.error('Failed to upload image');
+      toast.error('Failed to upload image. Only a practice admin can change the logo.');
     } finally {
       setUploading(false);
     }
@@ -286,11 +259,17 @@ function GeneralSettings({ practiceData, onSave, saving }: SettingsSectionProps)
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="flex items-center space-x-6 mb-4">
             <div className="shrink-0">
-              <img
-                className="h-24 w-24 object-cover rounded-lg border border-gray-200"
-                src={formData.display_picture || '/placeholder-logo.png'}
-                alt="Practice logo"
-              />
+              {formData.display_picture ? (
+                <img
+                  className="h-24 w-24 object-contain rounded-lg border border-gray-200"
+                  src={formData.display_picture}
+                  alt="Practice logo"
+                />
+              ) : (
+                <div className="h-24 w-24 rounded-lg border border-dashed border-gray-300 flex items-center justify-center text-xs text-gray-500">
+                  No logo
+                </div>
+              )}
             </div>
             <label className="block">
               <span className="sr-only">Choose practice logo</span>

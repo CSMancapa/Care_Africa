@@ -6,7 +6,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useState, useEffect } from 'react';
 import { toast } from 'sonner';
 import { AddRewardTierModal } from "@/components/Rewards/AddRewardTierModal";
-import { supabase } from "@/config/supabase";
+import { loadServices } from '@/lib/db/practiceSettings';
 import type { RewardItem } from '@/types/rewards';
 import { useCurrentPractice } from '@/hooks/useCurrentPractice';
 import {
@@ -20,6 +20,17 @@ import {
 import { Input } from "@/components/ui/input";
 import { Patient } from "@/types/patient";
 import { format } from 'date-fns';
+import {
+  archiveReward,
+  claimReward,
+  createRewards,
+  listRecentClaims,
+  listRewards,
+  restoreReward,
+  rewardMetrics,
+} from '@/lib/db/rewards';
+import { listPatients } from '@/lib/db/patients';
+import { listProducts } from '@/lib/db/products';
 
 export interface Service {
   id: string;
@@ -112,26 +123,11 @@ const RewardsMetrics = () => {
   useEffect(() => {
     const fetchMetrics = async () => {
       try {
-        // Fetch total rewards given from reward_claims
-        const { data: claims, error: claimsError } = await supabase
-          .from('reward_claims')
-          .select('*')
-          .eq('practice_id', practiceId);
-
-        if (claimsError) throw claimsError;
-
-        // Total claims (all rewards claimed)
-        setTotalClaims(claims?.length || 0);
-
-        // Count redeemed rewards
-        const redeemedClaims = claims?.filter(claim => claim.is_redeemed) || [];
-        setTotalRewards(redeemedClaims.length);
-        
-        // Calculate total points used in redeemed claims only
-        const totalPointsUsed = redeemedClaims.reduce((sum, claim) => 
-          sum + (claim.points_used || 0), 0);
-        setTotalPoints(totalPointsUsed);
-        
+        if (!practiceId) return;
+        const m = await rewardMetrics(practiceId);
+        setTotalClaims(m.totalClaims);
+        setTotalRewards(m.totalRedeemed);
+        setTotalPoints(m.pointsRedeemed);
       } catch (error) {
         console.error('Error fetching metrics:', error);
       }
@@ -377,14 +373,8 @@ const ArchivedRewardsModal = ({
 
   const fetchArchivedRewards = async () => {
     try {
-      const { data, error } = await supabase
-        .from('rewards')
-        .select('*')
-        .eq('practice_id', practiceId)
-        .not('deleted_at', 'is', null);
-
-      if (error) throw error;
-      setArchivedRewards(data || []);
+      if (!practiceId) return;
+      setArchivedRewards(await listRewards(practiceId, { archived: true }));
     } catch (error) {
       console.error('Error fetching archived rewards:', error);
       toast.error('Failed to fetch archived rewards');
@@ -396,16 +386,8 @@ const ArchivedRewardsModal = ({
   const handleUnarchive = async (rewardId: string) => {
     setUnarchiving(rewardId);
     try {
-      const { error } = await supabase
-        .from('rewards')
-        .update({ 
-          deleted_at: null,
-          updated_at: new Date().toISOString() 
-        })
-        .eq('id', rewardId);
+      await restoreReward(rewardId);
 
-      if (error) throw error;
-      
       setArchivedRewards(archivedRewards.filter(r => r.id !== rewardId));
       toast.success('Reward restored successfully');
     } catch (error) {
@@ -601,14 +583,8 @@ const AwardRewardModal = ({
 
   const fetchPatients = async () => {
     try {
-      // Fetch all patients, not just eligible ones
-      const { data, error } = await supabase
-        .from('patients')
-        .select('*')
-        .eq('practice_id', practiceId);
-
-      if (error) throw error;
-      setPatients(data || []);
+      if (!practiceId) return;
+      setPatients(await listPatients(practiceId));
     } catch (error) {
       console.error('Error fetching patients:', error);
       toast.error('Failed to fetch patients');
@@ -636,64 +612,8 @@ const AwardRewardModal = ({
     
     setAwarding(true);
     try {
-      // Get the latest patient data to ensure points haven't changed
-      const { data: latestPatient, error: fetchError } = await supabase
-        .from('patients')
-        .select('*')
-        .eq('id', selectedPatient.id)
-        .single();
-
-      if (fetchError) throw fetchError;
-
-      // Verify points again with latest data
-      if (!latestPatient || latestPatient.points < reward.points_required) {
-        throw new Error('Insufficient points');
-      }
-
-      const newPoints = latestPatient.points - reward.points_required;
-      const redemptionCode = generateUniqueCode();
-
-      // First create the reward claim with service information
-      const { error: claimError } = await supabase
-        .from('reward_claims')
-        .insert([{
-          patient_id: selectedPatient.id,
-          patient_email: selectedPatient.email,
-          reward_id: reward.id,
-          points_used: reward.points_required,
-          practice_id: practiceId,
-          created_at: new Date().toISOString(),
-          redemption_code: redemptionCode,
-          status: 'claimed',
-          service_id: reward.service_id,
-          service_name: service?.name || reward.name,
-          is_redeemed: false
-        }]);
-
-      if (claimError) throw claimError;
-
-      // If claim creation succeeds, update patient points
-      const newRewardClaim = {
-        reward_id: reward.id,
-        reward_name: reward.name,
-        points_used: reward.points_required,
-        claimed_at: new Date().toISOString(),
-        service_id: reward.service_id,
-        service_name: service?.name || reward.name,
-        redemption_code: redemptionCode,
-        status: 'claimed'
-      };
-
-      const { error: updateError } = await supabase
-        .from('patients')
-        .update({ 
-          points: newPoints,
-          reward_claims: [...(latestPatient.reward_claims || []), newRewardClaim],
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', selectedPatient.id);
-
-      if (updateError) throw updateError;
+      // The database re-checks the balance and spends the points in one step.
+      const { code: redemptionCode } = await claimReward(selectedPatient.id, reward.id!);
 
       toast.success(
         <div className="space-y-2">
@@ -704,11 +624,7 @@ const AwardRewardModal = ({
       onClose();
     } catch (error: any) {
       console.error('Error awarding reward:', error);
-      if (error.message === 'Insufficient points') {
-        toast.error('Patient no longer has enough points for this reward');
-      } else {
-        toast.error('Failed to award reward');
-      }
+      toast.error(error?.message || 'Failed to award reward');
     } finally {
       setAwarding(false);
     }
@@ -811,18 +727,18 @@ const AwardRewardModal = ({
 
 // Add a function to fetch reward claims
 const fetchRewardClaims = async (practiceId: string) => {
-  const { data, error } = await supabase
-    .from('reward_claims')
-    .select(`
-      *,
-      rewards (*),
-      patients (name)
-    `)
-    .eq('practice_id', practiceId)
-    .order('created_at', { ascending: false });
-
-  if (error) throw error;
-  return data;
+  const { items } = await listRecentClaims(practiceId, 20);
+  // Shape expected by the claims table below
+  return items.map(c => ({
+    id: c.id,
+    created_at: c.created_at,
+    is_redeemed: c.is_redeemed,
+    status: c.is_redeemed ? 'redeemed' : 'claimed',
+    redemption_code: c.redemption_code,
+    points_used: c.points_used,
+    rewards: { name: c.reward_name },
+    patients: { name: c.patient_name },
+  }));
 };
 
 // Update the RecentClaims component
@@ -894,21 +810,9 @@ const Rewards = () => {
 
   const fetchServices = async () => {
     try {
-      const { data, error } = await supabase
-        .from('practices')
-        .select('services')
-        .eq('id', practiceId)
-        .single();
-
-      if (error) throw error;
-      
-      // Transform the services array from the services column
-      const servicesWithIds = (data?.services || []).map((service: Service, index: number) => ({
-        ...service,
-        id: service.id || `service-${index}`
-      }));
-
-      setServices(servicesWithIds);
+      if (!practiceId) return;
+      // Services now live in their own table, each with a real id
+      setServices((await loadServices(practiceId)) as unknown as Service[]);
     } catch (error) {
       console.error('Error fetching services:', error);
       toast.error('Failed to fetch services');
@@ -919,13 +823,8 @@ const Rewards = () => {
 
   const fetchProducts = async () => {
     try {
-      const { data, error } = await supabase
-        .from('products')
-        .select('*')
-        .eq('practice_id', practiceId);
-
-      if (error) throw error;
-      setProducts(data || []);
+      if (!practiceId) return;
+      setProducts((await listProducts(practiceId)) as any);
     } catch (error) {
       console.error('Error fetching products:', error);
       toast.error('Failed to fetch products');
@@ -934,14 +833,8 @@ const Rewards = () => {
 
   const fetchRewards = async () => {
     try {
-      const { data, error } = await supabase
-        .from('rewards')
-        .select('*')
-        .eq('practice_id', practiceId)
-        .is('deleted_at', null);
-
-      if (error) throw error;
-      setRewards(data || []);
+      if (!practiceId) return;
+      setRewards(await listRewards(practiceId));
     } catch (error) {
       console.error('Error fetching rewards:', error);
       toast.error('Failed to fetch rewards');
@@ -950,21 +843,8 @@ const Rewards = () => {
 
   const handleAddRewardTier = async (rewards: RewardItem[]) => {
     try {
-      const { data, error } = await supabase
-        .from('rewards')
-        .insert(rewards.map(reward => ({
-          name: reward.name,
-          type: reward.type,
-          service_id: reward.service_id || null,
-          points_required: reward.points_required,
-          discount_percentage: reward.discount_percentage,
-          practice_id: practiceId,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })))
-        .select();
-
-      if (error) throw error;
+      if (!practiceId) return;
+      await createRewards(practiceId, rewards);
 
       toast.success('Rewards added successfully');
       fetchRewards();
@@ -976,15 +856,7 @@ const Rewards = () => {
 
   const handleArchiveReward = async (rewardId: string) => {
     try {
-      const { error } = await supabase
-        .from('rewards')
-        .update({ 
-          deleted_at: new Date().toISOString(),
-          updated_at: new Date().toISOString() 
-        })
-        .eq('id', rewardId);
-
-      if (error) throw error;
+      await archiveReward(rewardId);
       
       // Update local state to remove archived reward
       setRewards(rewards.filter(r => r.id !== rewardId));

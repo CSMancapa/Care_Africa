@@ -24,7 +24,7 @@ import {
   ChevronRight 
 } from "lucide-react";
 import { useCurrentPractice } from '@/hooks/useCurrentPractice';
-import { toast } from 'react-hot-toast';
+import { toast } from 'sonner';
 
 interface AddPatientModalProps {
   isOpen: boolean;

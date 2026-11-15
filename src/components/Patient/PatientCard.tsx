@@ -6,7 +6,9 @@ import { Button } from "@/components/ui/button";
 import { format } from "date-fns";
 import { Appointment } from '@/types/appointment';
 import AddAppointmentModal from '@/components/Appointment/AddAppointmentModal';
-import { supabase } from '@/config/supabase';
+import { bookAppointment } from '@/lib/db/appointments';
+import type { AppointmentData } from '@/types/appointment';
+import { toast } from 'sonner';
 
 
 interface PatientCardProps {
@@ -20,27 +22,23 @@ const PatientCard: React.FC<PatientCardProps> = ({ patient, appointments, onSche
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
 
   // Get the latest completed appointment date
-  const lastVisit = appointments?.find(apt => apt.status === 'completed')?.time
-    ? format(new Date(appointments.find(apt => apt.status === 'completed')!.time), 'MMM d, yyyy')
-    : 'No visits';
+  const completed = (appointments ?? [])
+    .filter(apt => apt.status === 'completed')
+    .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
+  const lastVisit = completed[0] ? format(new Date(completed[0].time), 'MMM d, yyyy') : 'No visits';
 
   // Update the appointments count as well
   const completedAppointmentsCount = appointments?.filter(apt => apt.status === 'completed').length || 0;
 
-  const handleAddAppointment = async (appointmentData: any) => {
+  const handleAddAppointment = async (appointmentData: AppointmentData) => {
     try {
-      const { data, error } = await supabase
-        .from('appointments')
-        .insert([appointmentData])
-        .select()
-        .single();
-
-      if (error) throw error;
-
+      await bookAppointment(patient.practice_id, { ...appointmentData, patient_id: patient.id });
+      toast.success('Appointment created successfully');
       setIsAddModalOpen(false);
       onSchedule && onSchedule();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to create appointment:', error);
+      toast.error(error?.message || 'Failed to create appointment');
     }
   };
 

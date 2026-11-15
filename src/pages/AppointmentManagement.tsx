@@ -3,7 +3,12 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { DashboardLayout } from "@/components/Dashboard/DashboardLayout";
 import { Award, Users, Clock, Calendar, PlusCircle, ArrowRight, Timer } from "lucide-react";
-import { supabase } from '@/config/supabase';
+import {
+  bookAppointment,
+  deleteAppointment,
+  listAppointments,
+  updateAppointmentStatus,
+} from '@/lib/db/appointments';
 import AppointmentCard from '@/components/Appointment/AppointmentCard';
 import AddAppointmentModal from '@/components/Appointment/AddAppointmentModal';
 import { Appointment } from '@/types/appointment';
@@ -47,17 +52,10 @@ const AppointmentManagement: React.FC = () => {
     try {
       console.log('Fetching appointments for practice:', practiceId);
       
-      const { data, error } = await supabase
-        .from('appointments')
-        .select('*')
-        .eq('practice_id', practiceId) // Filter by practice_id
-        .in('status', ['scheduled', 'arrived', 'waiting', 'in-room', 'completed', 'cancelled'])
-        .order('time', { ascending: true });
-
-      if (error) throw error;
-      
-      console.log('Found appointments:', data?.length || 0);
-      setAppointments(data || []);
+      const data = await listAppointments(practiceId, {
+        statuses: ['scheduled', 'arrived', 'waiting', 'in-room', 'completed', 'cancelled'],
+      });
+      setAppointments(data as any);
     } catch (error) {
       console.error('Error fetching appointments:', error);
       toast.error('Failed to fetch appointments');
@@ -70,14 +68,8 @@ const AppointmentManagement: React.FC = () => {
     if (!practiceId) return;
 
     try {
-      const { data, error } = await supabase
-        .from('appointments')
-        .select('*')
-        .eq('practice_id', practiceId) // Filter by practice_id
-        .eq('status', 'requested');
-
-      if (error) throw error;
-      setRequestedAppointments(data || []);
+      const data = await listAppointments(practiceId, { statuses: ['requested'] });
+      setRequestedAppointments(data as any);
     } catch (error) {
       console.error('Error fetching requested appointments:', error);
       toast.error('Failed to fetch requested appointments');
@@ -87,90 +79,40 @@ const AppointmentManagement: React.FC = () => {
   const handleUpdateStatus = async (
     id: string, 
     newStatus: Appointment['status'], 
-    waitTime?: string
+    _waitTime?: string
   ) => {
     try {
-      let updates: Partial<Appointment> = { 
-        status: newStatus,
-      };
-
-      if (newStatus === 'waiting') {
-        updates.wait_start_time = new Date().toISOString();
-      } 
-      else if (newStatus === 'in-room' && waitTime) {
-        updates.wait_duration = waitTime;
-        updates.wait_start_time = null;
+      // Wait times are worked out from the recorded arrival/seen times.
+      const { appointment, pointsAwarded } = await updateAppointmentStatus(id, newStatus);
+      setAppointments(prev => prev.map(apt => (apt.id === id ? (appointment as any) : apt)));
+      if (newStatus === 'completed') {
+        toast.success(
+          pointsAwarded > 0
+            ? `Visit completed. ${appointment.patient} earned ${pointsAwarded} points`
+            : 'Visit completed'
+        );
+      } else {
+        toast.success('Appointment status updated');
       }
-
-      // Update appointment status
-      const { data, error } = await supabase
-        .from('appointments')
-        .update(updates)
-        .eq('id', id)
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      setAppointments(prev => prev.map(apt => 
-        apt.id === id ? data : apt
-      ));
-      
-      toast.success('Appointment status updated');
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error updating appointment status:', error);
-      toast.error('Failed to update status');
+      toast.error(error?.message || 'Failed to update status');
     }
   };
 
   const handleAddAppointment = async (appointmentData: AppointmentData) => {
-    console.log('handleAddAppointment started with data:', appointmentData);
-    
     try {
       if (!practiceId) {
-        console.error('No practice ID available');
         toast.error('Practice ID is required');
         return;
       }
-
-      // Validate the appointment data
-      if (!appointmentData.time || !appointmentData.patient || !appointmentData.services) {
-        console.error('Missing required fields:', appointmentData);
-        toast.error('Missing required appointment information');
+      if (!appointmentData.time || !appointmentData.patient || appointmentData.services.length === 0) {
+        toast.error('Choose a time and at least one service');
         return;
       }
 
-      const appointment = {
-        ...appointmentData,
-        practice_id: practiceId,
-        status: 'scheduled',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      };
-
-      console.log('Sending appointment to Supabase:', appointment);
-
-      const { data, error } = await supabase
-        .from('appointments')
-        .insert([appointment])
-        .select()
-        .single();
-
-      if (error) {
-        console.error('Supabase error:', error);
-        throw error;
-      }
-
-      console.log('Appointment created successfully:', data);
-      
-      // Update local state
-      setAppointments(prev => {
-        console.log('Previous appointments:', prev);
-        const newAppointments = [...prev, data];
-        console.log('Updated appointments:', newAppointments);
-        return newAppointments;
-      });
-      
+      const created = await bookAppointment(practiceId, appointmentData);
+      setAppointments(prev => [...prev, created as any]);
       setIsModalOpen(false);
       toast.success('Appointment created successfully');
     } catch (error: any) {
@@ -187,10 +129,7 @@ const AppointmentManagement: React.FC = () => {
 
   const handleDeclineRequest = async (id: string) => {
     try {
-      await supabase
-        .from('appointments')
-        .delete()
-        .eq('id', id);
+      await deleteAppointment(id);
 
       setRequestedAppointments(prev => 
         prev.filter(appointment => appointment.id !== id)

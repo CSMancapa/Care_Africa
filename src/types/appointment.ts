@@ -19,27 +19,25 @@ export interface Appointment {
     updated_at: string;
     wait_time?: string;
     services: (Service | string)[];
+    patient_id?: string | null;
+    doctor_id?: string | null;
+    doctor_name?: string;
+    notes?: string | null;
 }
 
+/** What the booking form hands to the page that saves it. */
 export interface AppointmentData {
+  /** Local date and time, "yyyy-MM-ddTHH:mm:ss". */
   time: string;
-  status: 'scheduled' | 'arrived' | 'waiting' | 'in-room' | 'completed' | 'cancelled' | 'requested';
   patient: string;
-  patient_email: string;
-  patient_phone: string;
-  practice_id: string;
-  services: {
-    id: string;
-    name: string;
-    price: number;
-    description: string;
-  }[];
-  created_at?: string;
-  updated_at?: string;
+  patient_email?: string;
+  patient_phone?: string;
+  /** Set when booking from a member's card; otherwise the member is found or added. */
   patient_id?: string;
-  doctor_id: string;
-  applied_rewards?: Array<{
-    service_id: string;
-    redemption_code: string;
-  }>;
+  doctor_id?: string;
+  /** Each service with the price charged after any reward. */
+  services: { id: string; name: string; price: number }[];
+  /** A reward code to use up when the booking is saved. */
+  reward_code?: string;
+  notes?: string;
 }
