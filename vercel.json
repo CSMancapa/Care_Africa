@@ -1,17 +1,9 @@
 {
+  "framework": "vite",
+  "installCommand": "npm install",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
-  ],
-  "buildCommand": "cd admin/frontend && npm install && npm run build",
-  "outputDirectory": "admin/frontend/dist",
-  "framework": "vite",
-  "installCommand": "cd admin/frontend && npm install",
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "Cache-Control", "value": "s-maxage=0" }
-      ]
-    }
   ]
-} 
+}
