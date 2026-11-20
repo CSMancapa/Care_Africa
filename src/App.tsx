@@ -16,7 +16,33 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import Inventory from "./pages/Inventory";
 import Register from "./pages/Register";
 import AuthCallback from './pages/AuthCallback';
-import { PracticeProvider } from "./context/PracticeContext";
+import { PracticeProvider, usePractice } from "./context/PracticeContext";
+import { ConfigProvider } from "antd";
+import { resolveBrand } from "./lib/branding";
+
+/** Gives the antd tables (Sales) the practice's colour and the app's font, instead of antd blue. */
+const AntdTheme = ({ children }: { children: React.ReactNode }) => {
+  const { practice } = usePractice();
+  const { primary } = resolveBrand({ primary: practice?.brand_primary_color, accent: practice?.brand_accent_color });
+  return (
+    <ConfigProvider
+      theme={{
+        token: {
+          colorPrimary: primary,
+          colorLink: primary,
+          fontFamily: '"Plus Jakarta Sans Variable", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif',
+          borderRadius: 8,
+          colorBorderSecondary: "#ECEAE6",
+        },
+        components: {
+          Table: { headerBg: "#F9F8F6", headerColor: "#6A6E78", rowHoverBg: "#FBFAF8" },
+        },
+      }}
+    >
+      {children}
+    </ConfigProvider>
+  );
+};
 
 import Sales from "./pages/Sales";
 
@@ -29,6 +55,7 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <PracticeProvider>
+        <AntdTheme>
         <Routes>
           {/* Public routes */}
           <Route path="/login" element={<Login />} />
@@ -74,6 +101,7 @@ const App = () => (
           <Route path="/auth-callback" element={<AuthCallback />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
+        </AntdTheme>
         </PracticeProvider>
       </BrowserRouter>
     </TooltipProvider>

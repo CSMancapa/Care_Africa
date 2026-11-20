@@ -2,6 +2,10 @@ import { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../config/supabase';
 import { toast } from 'sonner';
+import { Link } from 'react-router-dom';
+import { MailCheck, RotateCw } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { AuthLayout } from '@/components/auth/AuthLayout';
 
 const VerifyEmail = () => {
   const location = useLocation();
@@ -79,33 +83,46 @@ const VerifyEmail = () => {
     }
   };
 
-  // If we're still on this page, show the verification UI
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-      <div className="sm:mx-auto sm:w-full sm:max-w-md">
-        <div className="bg-white py-8 px-4 shadow sm:rounded-lg sm:px-10">
-          <div className="text-center">
-            <h2 className="text-2xl font-bold text-gray-900">Check your email</h2>
-            <p className="mt-2 text-sm text-gray-600">
-              We sent a verification link to <span className="font-medium">{email}</span>
-            </p>
-          </div>
-
-          <div className="mt-6">
-            <button
-              onClick={handleResendEmail}
-              disabled={countdown > 0}
-              className={`w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white ${
-                countdown > 0 ? 'bg-gray-400' : 'bg-primary hover:bg-primary/90'
-              }`}
-            >
-              {countdown > 0 ? `Resend email in ${countdown}s` : 'Resend verification email'}
-            </button>
+    <AuthLayout
+      title="Check your email"
+      subtitle={
+        <>
+          We sent a confirmation link to <span className="font-semibold text-ink">{email}</span>.
+          Open it on this device to continue setting up your practice.
+        </>
+      }
+      footer={
+        <>
+          Wrong address?{' '}
+          <Link to="/register" className="font-semibold text-primary hover:underline underline-offset-4">
+            Start again
+          </Link>
+        </>
+      }
+    >
+      <div className="rounded-xl border border-border bg-card p-6 shadow-card">
+        <div className="flex items-start gap-4">
+          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+            <MailCheck className="h-5 w-5 text-primary" />
+          </span>
+          <div className="text-sm leading-relaxed text-muted-foreground">
+            <p className="font-semibold text-ink">Waiting for confirmation…</p>
+            <p className="mt-1">This page moves on by itself once you've clicked the link. It can take a minute to arrive, so check your spam folder too.</p>
           </div>
         </div>
+        <Button
+          variant="outline"
+          onClick={handleResendEmail}
+          disabled={countdown > 0}
+          className="mt-6 h-11 w-full"
+        >
+          <RotateCw className="h-4 w-4" />
+          {countdown > 0 ? `Resend email in ${countdown}s` : 'Resend confirmation email'}
+        </Button>
       </div>
-    </div>
+    </AuthLayout>
   );
 };
 
-export default VerifyEmail; 
+export default VerifyEmail;

@@ -30,7 +30,7 @@ import { useForm } from "react-hook-form";
 import * as z from "zod";
 import {
   Package,
-  DollarSign,
+
   Percent,
   Image as ImageIcon,
   Store,
@@ -46,6 +46,7 @@ import { useDropzone } from "react-dropzone";
 import { createProduct, updateProduct } from "@/lib/db/products";
 import { toast } from "sonner";
 import { useCurrentPractice } from "@/hooks/useCurrentPractice";
+import { RandIcon } from "@/components/icons/RandIcon";
 
 
 
@@ -446,7 +447,7 @@ const ProductFormModal: React.FC<ProductFormModalProps> = ({
                 <div className="flex flex-col gap-4">
                   <Card className="p-4">
                     <div className="flex items-center gap-2 mb-6">
-                      <DollarSign className="w-5 h-5 text-primary" />
+                      <RandIcon className="w-5 h-5 text-primary" />
                       <h3 className="font-semibold">Pricing & Availability</h3>
                     </div>
 
@@ -460,7 +461,7 @@ const ProductFormModal: React.FC<ProductFormModalProps> = ({
                               <FormLabel>Selling Price</FormLabel>
                               <FormControl>
                                 <div className="relative">
-                                  <DollarSign className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-medium text-muted-foreground">R</span>
                                   <Input
                                     type="number"
                                     step="0.01"
@@ -485,7 +486,7 @@ const ProductFormModal: React.FC<ProductFormModalProps> = ({
                               <FormLabel>Cost Price</FormLabel>
                               <FormControl>
                                 <div className="relative">
-                                  <DollarSign className="absolute left-3 top-2.5 h-4 w-4 text-muted-foreground" />
+                                  <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-sm font-medium text-muted-foreground">R</span>
                                   <Input
                                     type="number"
                                     step="0.01"

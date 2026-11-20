@@ -7,6 +7,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import type { RewardItem } from '@/types/rewards';
+import { formatRand } from '@/lib/currency';
 
 interface Service {
   id: string;
@@ -139,7 +140,7 @@ export function AddRewardTierModal({ isOpen, onClose, onAdd, services, products 
               key={`trigger-${index}`} 
               value={`${type}-${index}`}
             >
-              {item.name} - R{item.price}
+              {item.name} - {formatRand(item.price)}
             </TabsTrigger>
           ))}
         </TabsList>
@@ -186,9 +187,9 @@ export function AddRewardTierModal({ isOpen, onClose, onAdd, services, products 
                       <div>
                         <p className="text-sm font-medium text-gray-700">Value</p>
                         <p className="text-lg font-bold text-green-600">
-                          R{reward.type === 'free' 
+                          {formatRand(reward.type === 'free' 
                             ? item.price 
-                            : Math.round((item.price * (reward.discount_percentage || 0)) / 100)}
+                            : Math.round((item.price * (reward.discount_percentage || 0)) / 100))}
                         </p>
                       </div>
                     </div>

@@ -11,35 +11,40 @@
     --brand-accent: 28.8 100% 70.2%;            /* #FFB067 */
     --brand-accent-foreground: 0 0% 10.2%;      /* #1A1A1A */
 
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    /* Neutrals: a warm off-white canvas with white cards, so content lifts
+       off the page without heavy shadows. */
+    --background: 40 14% 97.6%;                 /* #F9F8F6 */
+    --foreground: 225 14% 10%;                  /* #16181D */
 
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 225 14% 10%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    --popover-foreground: 225 14% 10%;
 
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
+    --primary: 225 14% 10%;
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 40 10% 95%;
+    --secondary-foreground: 225 14% 10%;
 
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --muted: 40 10% 95%;
+    --muted-foreground: 225 6% 44%;             /* #6A6E78 */
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    --accent: 40 10% 95%;
+    --accent-foreground: 225 14% 10%;
 
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --border: 40 8% 89.5%;                      /* #E7E5E1 */
+    --input: 40 6% 86%;
+    --ring: 27.4 82.9% 52%;
 
-    --radius: 0.5rem;
+    --radius: 0.75rem;
+
+    --ink: 225 14% 10%;
+    --ink-soft: 225 12% 16%;
 
     --sidebar-background: 0 0% 98%;
 
@@ -102,7 +107,29 @@
     @apply border-border;
   }
 
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans;
+    font-feature-settings: "cv11", "ss01";
+  }
+
+  h1, h2, h3 {
+    letter-spacing: -0.015em;
+  }
+
+  ::selection {
+    background: hsl(var(--brand-primary) / 0.18);
+  }
+}
+
+@layer utilities {
+  /* Numbers that line up in columns and don't jiggle as they change. */
+  .tabular {
+    font-variant-numeric: tabular-nums;
   }
 }

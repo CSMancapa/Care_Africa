@@ -21,6 +21,7 @@ import { listProducts } from "@/lib/db/products";
 import { listPatients } from "@/lib/db/patients";
 import { lookupRewardCode } from "@/lib/db/appointments";
 import { createOrder } from "@/lib/db/sales";
+import { formatRand } from '@/lib/currency';
 
 interface Product {
   id: string;
@@ -210,7 +211,7 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
       setDiscountAmount(discount);
       setAppliedReward({ id: claim.reward_id, name: claim.reward_name } as any);
       setRewardCode(code.trim().toUpperCase());
-      toast.success(`${claim.reward_name} applied: R${discount.toFixed(2)} off`);
+      toast.success(`${claim.reward_name} applied: ${formatRand(discount)} off`);
     } catch (error: any) {
       toast.error(error?.message || 'Failed to validate reward code');
     } finally {
@@ -235,8 +236,8 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
       const who = selectedPatient?.name ?? 'walk-in customer';
       toast.success(
         result.pointsAwarded > 0
-          ? `Order ${result.orderNumber} saved for ${who}: R${result.total.toFixed(2)}, ${result.pointsAwarded} points earned`
-          : `Order ${result.orderNumber} saved: R${result.total.toFixed(2)}`
+          ? `Order ${result.orderNumber} saved for ${who}: ${formatRand(result.total)}, ${result.pointsAwarded} points earned`
+          : `Order ${result.orderNumber} saved: ${formatRand(result.total)}`
       );
       onSubmit?.();
       onClose();
@@ -330,7 +331,7 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
                           <div className="flex-1 min-w-0">
                             <h4 className="font-medium truncate">{product.name}</h4>
                             <p className="text-sm text-muted-foreground">
-                              R{product.price.toFixed(2)}
+                              {formatRand(product.price)}
                             </p>
                             <div className="mt-2 flex items-center gap-2">
                               <div className="flex items-center">
@@ -393,11 +394,11 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
                           <div className="min-w-0">
                             <p className="font-medium truncate">{product.name}</p>
                             <p className="text-sm text-muted-foreground">
-                              R{product.price.toFixed(2)} × {item.quantity}
+                              {formatRand(product.price)} × {item.quantity}
                             </p>
                           </div>
                           <p className="font-medium flex-none">
-                            R{(product.price * item.quantity).toFixed(2)}
+                            {formatRand((product.price * item.quantity))}
                           </p>
                         </div>
                       </Card>
@@ -407,7 +408,7 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
                 <div className="flex-none p-3 border-t bg-background">
                   <div className="flex justify-between items-center font-medium">
                     <span>Total</span>
-                    <span>R{getTotal().toFixed(2)}</span>
+                    <span>{formatRand(getTotal())}</span>
                   </div>
                 </div>
               </div>
@@ -490,16 +491,16 @@ const OrderFormModal: React.FC<OrderFormModalProps> = ({
                 <div className="space-y-2">
                   <div className="flex justify-between text-sm">
                     <span>Subtotal</span>
-                    <span>R{(getTotal() + discountAmount).toFixed(2)}</span>
+                    <span>{formatRand((getTotal() + discountAmount))}</span>
                   </div>
                   <div className="flex justify-between text-sm">
                     <span>Discount</span>
-                    <span>{discountAmount > 0 ? '−' : ''}R{discountAmount.toFixed(2)}</span>
+                    <span>{discountAmount > 0 ? '−' : ''}{formatRand(discountAmount)}</span>
                   </div>
                   <div className="border-t pt-2 mt-2">
                     <div className="flex justify-between font-medium">
                       <span>Total</span>
-                      <span>R{getTotal().toFixed(2)}</span>
+                      <span>{formatRand(getTotal())}</span>
                     </div>
                   </div>
                 </div>

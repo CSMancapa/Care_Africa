@@ -19,7 +19,23 @@ export default {
       },
     },
     extend: {
+      fontFamily: {
+        sans: ['"Plus Jakarta Sans Variable"', '"Plus Jakarta Sans"', "ui-sans-serif", "system-ui", "-apple-system", "Segoe UI", "sans-serif"],
+      },
+      borderRadius: {
+        lg: "var(--radius)",
+        md: "calc(var(--radius) - 2px)",
+        sm: "calc(var(--radius) - 4px)",
+      },
+      boxShadow: {
+        card: "0 1px 2px rgba(22, 24, 29, 0.04), 0 1px 3px rgba(22, 24, 29, 0.03)",
+        lift: "0 8px 24px -8px rgba(22, 24, 29, 0.12), 0 2px 6px rgba(22, 24, 29, 0.04)",
+      },
       colors: {
+        ink: {
+          DEFAULT: "hsl(var(--ink))",
+          soft: "hsl(var(--ink-soft))",
+        },
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
@@ -32,7 +48,7 @@ export default {
           foreground: "hsl(var(--brand-primary-foreground) / <alpha-value>)",
         },
         secondary: {
-          DEFAULT: "#718096",
+          DEFAULT: "#64748B",
           foreground: "#FFFFFF",
         },
         accent: {

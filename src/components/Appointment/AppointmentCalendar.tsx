@@ -139,9 +139,9 @@ const AppointmentCalendar: React.FC<AppointmentCalendarProps> = ({
                     key={apt.id}
                     className={cn(
                       "text-xs p-1 rounded truncate",
-                      apt.status === 'scheduled' && "bg-blue-100 text-blue-700",
+                      apt.status === 'scheduled' && "bg-slate-100 text-slate-700",
                       apt.status === 'waiting' && "bg-orange-100 text-orange-700",
-                      apt.status === 'in-room' && "bg-orange-100 text-orange-700",
+                      apt.status === 'in-room' && "bg-teal-100 text-teal-700",
                       apt.status === 'completed' && "bg-green-100 text-green-700"
                     )}
                   >

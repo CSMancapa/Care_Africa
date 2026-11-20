@@ -14,6 +14,7 @@ import {
   Clock4,
   AlertCircle
 } from "lucide-react";
+import { formatRand } from '@/lib/currency';
 
 export interface Service {
   id: string;
@@ -77,8 +78,8 @@ export const AppointmentDetailsModal: React.FC<AppointmentDetailsModalProps> = (
         <div className="p-4 space-y-6">
           {/* Status Banner */}
           <div className={`p-4 rounded-lg ${
-            appointment.status === 'scheduled' ? 'bg-blue-50 text-blue-700' :
-            appointment.status === 'in-room' ? 'bg-orange-50 text-orange-700' :
+            appointment.status === 'scheduled' ? 'bg-slate-50 text-slate-700' :
+            appointment.status === 'in-room' ? 'bg-teal-50 text-teal-700' :
             appointment.status === 'waiting' ? 'bg-yellow-50 text-yellow-700' :
             appointment.status === 'completed' ? 'bg-green-50 text-green-700' :
             'bg-red-50 text-red-700'
@@ -178,11 +179,11 @@ export const AppointmentDetailsModal: React.FC<AppointmentDetailsModalProps> = (
                       <div className="flex flex-col items-end gap-1">
                         {service.applied_reward && (
                           <span className="text-sm text-muted-foreground line-through">
-                            R{service.price.toLocaleString()}
+                            {formatRand(service.price)}
                           </span>
                         )}
                         <span className="text-primary font-medium">
-                          R{calculateServicePrice(service).toLocaleString()}
+                          {formatRand(calculateServicePrice(service))}
                         </span>
                       </div>
                     </div>
@@ -200,7 +201,7 @@ export const AppointmentDetailsModal: React.FC<AppointmentDetailsModalProps> = (
                     </div>
                     <div className="text-right">
                       <p className="text-lg font-bold text-primary">
-                        R{totalAmount.toLocaleString()}
+                        {formatRand(totalAmount)}
                       </p>
                     </div>
                   </div>

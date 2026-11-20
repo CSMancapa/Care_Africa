@@ -2,6 +2,13 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../config/supabase';
 import { toast } from 'sonner';
+import { Link } from 'react-router-dom';
+import { ArrowRight, Check, Loader2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { AuthLayout } from '@/components/auth/AuthLayout';
+import { PasswordInput } from '@/components/auth/PasswordInput';
 
 const Register = () => {
   const navigate = useNavigate();
@@ -11,7 +18,6 @@ const Register = () => {
     email: '',
     password: '',
   });
-  const [showPassword, setShowPassword] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,99 +62,84 @@ const Register = () => {
     }
   };
 
+  const longEnough = formData.password.length >= 8;
+
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col justify-center py-12 sm:px-6 lg:px-8">
-      <div className="sm:mx-auto sm:w-full sm:max-w-md">
-        <h2 className="text-center text-3xl font-extrabold text-gray-900">
-          Register your practice
-        </h2>
-      </div>
-
-      <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-        <div className="bg-white py-8 px-4 shadow sm:rounded-lg sm:px-10">
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div>
-              <label className="block text-sm font-medium text-gray-700">
-                Practice Name
-              </label>
-              <input
-                type="text"
-                required
-                value={formData.practiceName}
-                onChange={(e) => setFormData(prev => ({
-                  ...prev,
-                  practiceName: e.target.value
-                }))}
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700">
-                Email Address
-              </label>
-              <input
-                type="email"
-                required
-                value={formData.email}
-                onChange={(e) => setFormData(prev => ({
-                  ...prev,
-                  email: e.target.value
-                }))}
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700">
-                Password
-              </label>
-              <div className="mt-1 relative">
-                <input
-                  type={showPassword ? "text" : "password"}
-                  required
-                  minLength={8}
-                  value={formData.password}
-                  onChange={(e) => setFormData(prev => ({
-                    ...prev,
-                    password: e.target.value
-                  }))}
-                  className="block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPassword(!showPassword)}
-                  className="absolute inset-y-0 right-0 pr-3 flex items-center"
-                >
-                  {showPassword ? (
-                    <svg className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                    </svg>
-                  ) : (
-                    <svg className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" />
-                    </svg>
-                  )}
-                </button>
-              </div>
-              <p className="mt-1 text-sm text-gray-500">
-                Must be at least 8 characters long
-              </p>
-            </div>
-
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-            >
-              {loading ? 'Registering...' : 'Register'}
-            </button>
-          </form>
+    <AuthLayout
+      title="Register your practice"
+      subtitle="Set up your practice in a few minutes. You can add your logo, colours, services and team next."
+      footer={
+        <>
+          Already registered?{' '}
+          <Link to="/login" className="font-semibold text-primary hover:underline underline-offset-4">
+            Sign in
+          </Link>
+        </>
+      }
+    >
+      <form onSubmit={handleSubmit} className="space-y-5">
+        <div className="space-y-2">
+          <Label htmlFor="practiceName">Practice name</Label>
+          <Input
+            id="practiceName"
+            type="text"
+            required
+            autoComplete="organization"
+            placeholder="e.g. Seaview Dental Studio"
+            value={formData.practiceName}
+            onChange={(e) => setFormData(prev => ({ ...prev, practiceName: e.target.value }))}
+            className="h-11"
+          />
         </div>
-      </div>
-    </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="email">Work email</Label>
+          <Input
+            id="email"
+            type="email"
+            required
+            autoComplete="email"
+            placeholder="you@yourpractice.co.za"
+            value={formData.email}
+            onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
+            className="h-11"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="password">Password</Label>
+          <PasswordInput
+            id="password"
+            required
+            minLength={8}
+            autoComplete="new-password"
+            value={formData.password}
+            onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))}
+          />
+          <p className={`flex items-center gap-1.5 text-xs transition-colors ${longEnough ? 'text-emerald-600' : 'text-muted-foreground'}`}>
+            <Check className={`h-3.5 w-3.5 ${longEnough ? 'opacity-100' : 'opacity-40'}`} />
+            At least 8 characters
+          </p>
+        </div>
+
+        <Button type="submit" disabled={loading} className="h-11 w-full text-[15px]">
+          {loading ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" /> Creating your account…
+            </>
+          ) : (
+            <>
+              Create account <ArrowRight className="h-4 w-4" />
+            </>
+          )}
+        </Button>
+
+        <p className="text-center text-xs leading-relaxed text-muted-foreground">
+          We'll email you a link to confirm your address before you continue.
+        </p>
+      </form>
+    </AuthLayout>
   );
 };
 
-export default Register; 
+export default Register;

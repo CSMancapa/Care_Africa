@@ -28,7 +28,7 @@ export function DatePickerWithRange({
             className={cn(
               "w-[300px] justify-start text-left font-normal bg-white hover:bg-gray-50/90 transition-colors",
               "border border-gray-200 shadow-sm",
-              "focus:ring-2 focus:ring-blue-100 focus:border-blue-200",
+              "focus:ring-2 focus:ring-primary/20 focus:border-primary/30",
               !value && "text-muted-foreground"
             )}
           >

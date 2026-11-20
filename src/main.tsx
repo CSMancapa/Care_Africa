@@ -1,4 +1,5 @@
 import { createRoot } from 'react-dom/client'
+import '@fontsource-variable/plus-jakarta-sans';
 import './index.css'
 
 const root = createRoot(document.getElementById("root")!);

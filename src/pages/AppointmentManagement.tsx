@@ -1,3 +1,4 @@
+import { format } from 'date-fns';
 import React, { useEffect, useState } from 'react';
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -159,7 +160,7 @@ const AppointmentManagement: React.FC = () => {
         {/* Header Section */}
         <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
+            <h1 className="text-3xl font-extrabold tracking-tight text-ink">
               Appointment Management
             </h1>
             <p className="text-gray-600 mt-2">
@@ -256,7 +257,7 @@ const AppointmentManagement: React.FC = () => {
             <Card className="p-6">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold">
-                  {selectedDate.toLocaleDateString()}
+                  {format(selectedDate, "EEEE, d MMMM yyyy")}
                 </h2>
                 <Badge variant="secondary">
                   {practiceId ? filteredAppointments.length : 0} appointments

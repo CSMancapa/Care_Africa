@@ -353,7 +353,7 @@ export const Onboarding = () => {
                       doctors: updatedDoctors
                     }));
                   }}
-                  className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                  className="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded"
                 />
                 <span className="text-sm font-medium text-gray-700 capitalize">{day}</span>
               </div>
@@ -382,7 +382,7 @@ export const Onboarding = () => {
                         doctors: updatedDoctors
                       }));
                     }}
-                    className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                    className="h-4 w-4 text-primary focus:ring-primary border-gray-300 rounded"
                   />
                   <span className="text-sm text-gray-600">Use practice hours</span>
                 </div>
@@ -412,7 +412,7 @@ export const Onboarding = () => {
                           doctors: updatedDoctors
                         }));
                       }}
-                      className="block px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                      className="block px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                     />
                     <span className="text-gray-500">to</span>
                     <input
@@ -438,7 +438,7 @@ export const Onboarding = () => {
                           doctors: updatedDoctors
                         }));
                       }}
-                      className="block px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                      className="block px-3 py-2 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary"
                     />
                   </div>
                 )}
@@ -530,7 +530,7 @@ export const Onboarding = () => {
         {practiceData.acceptedInsurances.map((insurance) => (
           <div
             key={insurance}
-            className="flex items-center gap-1 px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-sm"
+            className="flex items-center gap-1 px-3 py-1 bg-primary/5 text-primary rounded-full text-sm"
           >
             <span>{insurance}</span>
             <button
@@ -541,7 +541,7 @@ export const Onboarding = () => {
                   acceptedInsurances: prev.acceptedInsurances.filter(ins => ins !== insurance)
                 }));
               }}
-              className="ml-1 text-blue-500 hover:text-blue-700"
+              className="ml-1 text-primary hover:text-primary"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -557,8 +557,8 @@ export const Onboarding = () => {
             key={provider}
             className={`flex items-center p-3 rounded-lg border cursor-pointer transition-colors ${
               practiceData.acceptedInsurances.includes(provider)
-                ? 'border-blue-500 bg-blue-50'
-                : 'border-gray-200 hover:border-blue-200'
+                ? 'border-primary bg-primary/5'
+                : 'border-gray-200 hover:border-primary/30'
             }`}
           >
             <input
@@ -577,7 +577,7 @@ export const Onboarding = () => {
                   }));
                 }
               }}
-              className="h-4 w-4 rounded border-gray-300 text-blue-600"
+              className="h-4 w-4 rounded border-gray-300 text-primary"
             />
             <span className="ml-3 text-sm font-medium">{provider}</span>
           </label>
@@ -706,7 +706,7 @@ export const Onboarding = () => {
               services: [...prev.services, { name: '', price: 0, description: '' }]
             }));
           }}
-          className="w-full py-3 px-4 border-2 border-dashed border-gray-300 rounded-xl text-sm font-medium text-gray-600 hover:border-blue-500 hover:text-blue-500 transition-colors flex items-center justify-center"
+          className="w-full py-3 px-4 border-2 border-dashed border-gray-300 rounded-xl text-sm font-medium text-gray-600 hover:border-primary hover:text-primary transition-colors flex items-center justify-center"
         >
           <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
@@ -776,13 +776,13 @@ export const Onboarding = () => {
           {practiceData.specialties.map((specialty) => (
             <div
               key={specialty}
-              className="flex items-center gap-1 px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-sm"
+              className="flex items-center gap-1 px-3 py-1 bg-primary/5 text-primary rounded-full text-sm"
             >
               <span>{specialty}</span>
               <button
                 type="button"
                 onClick={() => handleSpecialtyRemove(specialty)}
-                className="ml-1 text-blue-500 hover:text-blue-700"
+                className="ml-1 text-primary hover:text-primary"
               >
                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -803,7 +803,7 @@ export const Onboarding = () => {
                 setIsOpen(true);
               }}
               onFocus={() => setIsOpen(true)}
-              className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              className="w-full px-4 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-primary focus:border-transparent"
               placeholder="Search or add specialty..."
             />
             <button
@@ -826,7 +826,7 @@ export const Onboarding = () => {
                       key={option.name}
                       type="button"
                       onClick={() => handleSpecialtyAdd(option.name)}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                      className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-primary/5 hover:text-primary"
                     >
                       {option.name}
                     </button>
@@ -837,7 +837,7 @@ export const Onboarding = () => {
                   <button
                     type="button"
                     onClick={() => handleSpecialtyAdd(searchTerm)}
-                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                    className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-primary/5 hover:text-primary"
                   >
                     Add "{searchTerm}" as custom specialty
                   </button>
@@ -873,7 +873,7 @@ export const Onboarding = () => {
             />
             <div className="flex items-center space-x-4">
               <span className="text-sm text-gray-500">Need help?</span>
-              <button className="text-blue-600 hover:text-blue-700 text-sm font-medium">Contact Support</button>
+              <button className="text-primary hover:text-primary text-sm font-medium">Contact Support</button>
             </div>
           </div>
         </div>
@@ -892,7 +892,7 @@ export const Onboarding = () => {
                         <div key={index} className="flex items-center">
                           <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
                             index + 1 <= currentStep
-                              ? 'bg-blue-500 text-white'
+                              ? 'bg-primary text-white'
                               : 'bg-gray-100 text-gray-400'
                           }`}>
                             {index + 1}
@@ -907,12 +907,12 @@ export const Onboarding = () => {
                     </div>
                   </div>
 
-                  <div className="bg-gradient-to-br from-blue-50 to-orange-50 rounded-xl p-6">
-                    <h3 className="text-sm font-medium text-blue-800 mb-2">Need Assistance?</h3>
-                    <p className="text-sm text-blue-700 mb-4">
+                  <div className="bg-gradient-to-br from-primary/5 to-orange-50 rounded-xl p-6">
+                    <h3 className="text-sm font-medium text-gray-900 mb-2">Need Assistance?</h3>
+                    <p className="text-sm text-primary mb-4">
                       Our support team is here to help you get started with Care Africa.
                     </p>
-                    <button className="text-sm text-blue-600 hover:text-blue-700 font-medium">
+                    <button className="text-sm text-primary hover:text-primary font-medium">
                       View Setup Guide →
                     </button>
                   </div>
@@ -960,7 +960,7 @@ export const Onboarding = () => {
                               ...prev,
                               city: e.target.value
                             }))}
-                            className="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            className="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-primary focus:border-transparent"
                             required
                           />
                         </div>
@@ -976,7 +976,7 @@ export const Onboarding = () => {
                               ...prev,
                               province: e.target.value
                             }))}
-                            className="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            className="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-primary focus:border-transparent"
                             required
                           />
                         </div>
@@ -992,7 +992,7 @@ export const Onboarding = () => {
                               ...prev,
                               postal_code: e.target.value
                             }))}
-                            className="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                            className="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-primary focus:border-transparent"
                             required
                           />
                         </div>
@@ -1010,7 +1010,7 @@ export const Onboarding = () => {
                             phone: phone
                           }))}
                           containerClass="w-full"
-                          inputClass="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          inputClass="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-primary focus:border-transparent"
                         />
                       </div>
 
@@ -1059,14 +1059,14 @@ export const Onboarding = () => {
                         <button
                           type="button"
                           onClick={() => setAllDaysHours('09:00', '17:00', true)}
-                          className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors text-sm font-medium"
+                          className="px-4 py-2 bg-primary/5 text-primary rounded-lg hover:bg-primary/10 transition-colors text-sm font-medium"
                         >
                           Set Standard Hours (9-5)
                         </button>
                         <button
                           type="button"
                           onClick={() => setAllDaysHours('08:00', '18:00', true)}
-                          className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 transition-colors text-sm font-medium"
+                          className="px-4 py-2 bg-primary/5 text-primary rounded-lg hover:bg-primary/10 transition-colors text-sm font-medium"
                         />
                       </div>
 
@@ -1091,7 +1091,7 @@ export const Onboarding = () => {
                                     onChange={(e) => handleDayToggle(day, e.target.checked)}
                                     className="sr-only peer"
                                   />
-                                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-100 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+                                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary/20 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary"></div>
                                 </label>
                               </div>
 
@@ -1102,14 +1102,14 @@ export const Onboarding = () => {
                                       type="time"
                                       value={hours.start}
                                       onChange={(e) => handleTimeChange(day, 'start', e.target.value)}
-                                      className="px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                      className="px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
                                     />
                                     <span className="text-gray-500">to</span>
                                     <input
                                       type="time"
                                       value={hours.end}
                                       onChange={(e) => handleTimeChange(day, 'end', e.target.value)}
-                                      className="px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                      className="px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
                                     />
                                   </div>
                                 ) : (
@@ -1121,14 +1121,14 @@ export const Onboarding = () => {
                         ))}
                       </div>
 
-                      <div className="mt-6 bg-gradient-to-r from-blue-50 to-orange-50 rounded-xl p-4">
+                      <div className="mt-6 bg-gradient-to-r from-primary/5 to-orange-50 rounded-xl p-4">
                         <div className="flex items-start space-x-3">
                           <div className="flex-shrink-0">
-                            <svg className="h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                            <svg className="h-5 w-5 text-primary" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                               <path fillRule="evenodd" d="M18 10a8 8 0 100-16 8 8 0 000 16zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
                             </svg>
                           </div>
-                          <p className="text-sm text-blue-700">
+                          <p className="text-sm text-primary">
                             These hours will be displayed to your patients. You can update them anytime in settings.
                           </p>
                         </div>
@@ -1215,7 +1215,7 @@ export const Onboarding = () => {
                           <button
                             type="button"
                             onClick={addDoctor}
-                            className="w-full py-3 px-4 border-2 border-dashed border-gray-300 rounded-xl text-sm font-medium text-gray-600 hover:border-blue-500 hover:text-blue-500 transition-colors flex items-center justify-center"
+                            className="w-full py-3 px-4 border-2 border-dashed border-gray-300 rounded-xl text-sm font-medium text-gray-600 hover:border-primary hover:text-primary transition-colors flex items-center justify-center"
                           >
                             <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
@@ -1327,7 +1327,7 @@ export const Onboarding = () => {
                                 services: [...prev.services, { name: '', price: 0, description: '' }]
                               }));
                             }}
-                            className="w-full py-3 px-4 border-2 border-dashed border-gray-300 rounded-xl text-sm font-medium text-gray-600 hover:border-blue-500 hover:text-blue-500 transition-colors flex items-center justify-center"
+                            className="w-full py-3 px-4 border-2 border-dashed border-gray-300 rounded-xl text-sm font-medium text-gray-600 hover:border-primary hover:text-primary transition-colors flex items-center justify-center"
                           >
                             <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
@@ -1349,8 +1349,8 @@ export const Onboarding = () => {
                               key={provider}
                               className={`relative flex items-center p-4 cursor-pointer rounded-xl border transition-all ${
                                 practiceData.acceptedInsurances.includes(provider)
-                                  ? 'border-blue-500 bg-blue-50'
-                                  : 'border-gray-200 hover:border-blue-200'
+                                  ? 'border-primary bg-primary/5'
+                                  : 'border-gray-200 hover:border-primary/30'
                               }`}
                             >
                               <input
@@ -1371,7 +1371,7 @@ export const Onboarding = () => {
                                     }));
                                   }
                                 }}
-                                className="h-4 w-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                                className="h-4 w-4 text-primary rounded border-gray-300 focus:ring-primary"
                               />
                               <span className="ml-3 text-sm font-medium text-gray-900">{provider}</span>
                             </label>
@@ -1443,8 +1443,8 @@ export const Onboarding = () => {
                               key={campaign}
                               className={`relative flex flex-col p-4 cursor-pointer rounded-xl border transition-all ${
                                 practiceData.selectedRewardCampaigns.includes(campaign)
-                                  ? 'border-blue-500 bg-blue-50'
-                                  : 'border-gray-200 hover:border-blue-200'
+                                  ? 'border-primary bg-primary/5'
+                                  : 'border-gray-200 hover:border-primary/30'
                               }`}
                             >
                               <div className="flex items-start space-x-3">
@@ -1464,7 +1464,7 @@ export const Onboarding = () => {
                                       }));
                                     }
                                   }}
-                                  className="h-4 w-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500"
+                                  className="h-4 w-4 text-primary rounded border-gray-300 focus:ring-primary"
                                 />
                                 <div>
                                   <span className="text-sm font-medium text-gray-900">{campaign}</span>
@@ -1497,7 +1497,7 @@ export const Onboarding = () => {
                                       perVisit: parseInt(e.target.value)
                                     }
                                   }))}
-                                  className="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  className="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-primary focus:border-transparent"
                                   min="0"
                                 />
                                 <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
@@ -1521,7 +1521,7 @@ export const Onboarding = () => {
                                       perReferral: parseInt(e.target.value)
                                     }
                                   }))}
-                                  className="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  className="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-primary focus:border-transparent"
                                   min="0"
                                 />
                                 <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
@@ -1545,7 +1545,7 @@ export const Onboarding = () => {
                                       perReview: parseInt(e.target.value)
                                     }
                                   }))}
-                                  className="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                  className="w-full px-4 py-2 rounded-lg border border-gray-200 focus:ring-2 focus:ring-primary focus:border-transparent"
                                   min="0"
                                 />
                                 <div className="absolute inset-y-0 right-0 flex items-center pr-3 pointer-events-none">
@@ -1557,14 +1557,14 @@ export const Onboarding = () => {
                         </div>
                       </div>
 
-                      <div className="bg-gradient-to-r from-blue-50 to-orange-50 rounded-xl p-4">
+                      <div className="bg-gradient-to-r from-primary/5 to-orange-50 rounded-xl p-4">
                         <div className="flex items-start space-x-3">
                           <div className="flex-shrink-0">
-                            <svg className="h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+                            <svg className="h-5 w-5 text-primary" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
                               <path fillRule="evenodd" d="M18 10a8 8 0 100-16 8 8 0 000 16zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
                             </svg>
                           </div>
-                          <p className="text-sm text-blue-700">
+                          <p className="text-sm text-primary">
                             Your rewards program will help build patient loyalty. You can adjust these settings anytime in your practice dashboard.
                           </p>
                         </div>

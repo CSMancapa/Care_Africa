@@ -15,7 +15,7 @@ const AppointmentStatistics: React.FC<AppointmentStatisticsProps> = ({ appointme
   return (
     <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
       <Card className="p-6 flex items-center">
-        <Clock className="w-6 h-6 text-blue-500 mr-4" />
+        <Clock className="w-6 h-6 text-primary mr-4" />
         <div>
           <p className="text-sm text-gray-500">Total Appointments</p>
           <p className="text-xl font-semibold">{totalAppointments}</p>

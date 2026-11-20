@@ -120,7 +120,7 @@ const PatientManagement: React.FC = () => {
       </div>
 
       {/* Content */}
-      <h3 className="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent mb-3">
+      <h3 className="text-2xl font-bold tracking-tight text-ink mb-3">
         Welcome to Member Management
       </h3>
       <p className="text-gray-500 text-center mb-8 max-w-md">
@@ -227,7 +227,7 @@ const PatientManagement: React.FC = () => {
           {/* Header Section */}
           <div className="flex justify-between items-center">
             <div>
-              <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
+              <h1 className="text-3xl font-extrabold tracking-tight text-ink">
                 Member Management
               </h1>
               <p className="text-gray-600 mt-2">

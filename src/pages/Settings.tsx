@@ -119,7 +119,7 @@ export default function Settings() {
       <div className="space-y-6">
         <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
+            <h1 className="text-3xl font-extrabold tracking-tight text-ink">
               Practice Settings
             </h1>
             <p className="text-gray-600 mt-2">
@@ -580,13 +580,13 @@ function ServicesSettings({ practiceData, onSave, saving }: SettingsSectionProps
               {specialties.map((specialty) => (
                 <div
                   key={specialty}
-                  className="flex items-center gap-1 px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-sm"
+                  className="flex items-center gap-1 px-3 py-1 bg-primary/5 text-primary rounded-full text-sm"
                 >
                   <span>{specialty}</span>
                   <button
                     type="button"
                     onClick={() => handleSpecialtyRemove(specialty)}
-                    className="ml-1 text-blue-500 hover:text-blue-700"
+                    className="ml-1 text-primary hover:text-primary"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -621,7 +621,7 @@ function ServicesSettings({ practiceData, onSave, saving }: SettingsSectionProps
                           key={option.name}
                           type="button"
                           onClick={() => handleSpecialtyAdd(option.name)}
-                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-primary/5 hover:text-primary"
                         >
                           {option.name}
                         </button>
@@ -630,7 +630,7 @@ function ServicesSettings({ practiceData, onSave, saving }: SettingsSectionProps
                     <button
                       type="button"
                       onClick={() => handleSpecialtyAdd(searchTerm)}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                      className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-primary/5 hover:text-primary"
                     >
                       Add "{searchTerm}" as custom specialty
                     </button>
@@ -733,13 +733,13 @@ function ServicesSettings({ practiceData, onSave, saving }: SettingsSectionProps
               {acceptedInsurances.map((insurance) => (
                 <div
                   key={insurance}
-                  className="flex items-center gap-1 px-3 py-1 bg-blue-50 text-blue-700 rounded-full text-sm"
+                  className="flex items-center gap-1 px-3 py-1 bg-primary/5 text-primary rounded-full text-sm"
                 >
                   <span>{insurance}</span>
                   <button
                     type="button"
                     onClick={() => handleInsuranceRemove(insurance)}
-                    className="ml-1 text-blue-500 hover:text-blue-700"
+                    className="ml-1 text-primary hover:text-primary"
                   >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -774,7 +774,7 @@ function ServicesSettings({ practiceData, onSave, saving }: SettingsSectionProps
                           key={provider}
                           type="button"
                           onClick={() => handleInsuranceAdd(provider)}
-                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                          className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-primary/5 hover:text-primary"
                         >
                           {provider}
                         </button>
@@ -783,7 +783,7 @@ function ServicesSettings({ practiceData, onSave, saving }: SettingsSectionProps
                     <button
                       type="button"
                       onClick={() => handleInsuranceAdd(insuranceSearchTerm)}
-                      className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 hover:text-blue-700"
+                      className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-primary/5 hover:text-primary"
                     >
                       Add "{insuranceSearchTerm}" as custom provider
                     </button>
@@ -843,9 +843,9 @@ function RewardsSettings({ practiceData, onSave, saving }: SettingsSectionProps)
       </CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="bg-blue-50 p-4 rounded-lg space-y-4">
-            <h3 className="font-medium text-blue-900">How Points Work</h3>
-            <p className="text-sm text-blue-700 mb-4">
+          <div className="bg-primary/5 p-4 rounded-lg space-y-4">
+            <h3 className="font-medium text-gray-900">How Points Work</h3>
+            <p className="text-sm text-primary mb-4">
               Points have a direct 1:1 value with Rands. Every 1 point = R1 that members can redeem.
             </p>
             <div className="space-y-2">
@@ -860,9 +860,9 @@ function RewardsSettings({ practiceData, onSave, saving }: SettingsSectionProps)
                   onChange={(e) => setRewardPercentage(e.target.value)}
                   className="w-24"
                 />
-                <span className="text-sm text-blue-700">% of purchase value as points</span>
+                <span className="text-sm text-primary">% of purchase value as points</span>
               </div>
-              <p className="text-sm text-blue-700">
+              <p className="text-sm text-primary">
                 Example: With {rewardPercentage || 0}% rewards, a R500 purchase will earn {calculatedReward} points = R{calculatedReward} value
               </p>
             </div>

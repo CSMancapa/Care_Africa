@@ -13,10 +13,10 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     <div className="min-h-screen bg-background">
       <DashboardSidebar />
       <main className="pl-64 min-h-screen flex flex-col">
-        <div className="container p-8 flex-1">
+        <div className="mx-auto w-full max-w-[1400px] flex-1 px-8 py-8 xl:px-10">
           <ErrorBoundary resetKey={location.pathname}>{children}</ErrorBoundary>
         </div>
-        <footer className="container px-8 py-4 border-t border-border text-center text-xs text-muted-foreground">
+        <footer className="mx-auto w-full max-w-[1400px] px-8 py-5 text-center text-xs text-muted-foreground/80 xl:px-10">
           {POWERED_BY_TEXT}
         </footer>
       </main>

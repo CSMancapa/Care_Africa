@@ -25,15 +25,16 @@ interface AppointmentCardProps {
 
 const StatusBadge = ({ status }: { status: Appointment['status'] }) => {
   const statusConfig = {
-    scheduled: { className: "bg-blue-100 text-blue-800", label: "Scheduled" },
+    scheduled: { className: "bg-slate-100 text-slate-700", label: "Scheduled" },
     arrived: { className: "bg-orange-100 text-orange-800", label: "Arrived" },
     waiting: { className: "bg-yellow-100 text-yellow-800", label: "Waiting" },
-    "in-room": { className: "bg-orange-100 text-orange-800", label: "In Room" },
+    "in-room": { className: "bg-teal-100 text-teal-800", label: "In Room" },
     completed: { className: "bg-green-100 text-green-800", label: "Completed" },
     cancelled: { className: "bg-red-100 text-red-800", label: "Cancelled" },
+    requested: { className: "bg-primary/10 text-primary", label: "Requested" },
   };
 
-  const config = statusConfig[status];
+  const config = statusConfig[status] ?? statusConfig.scheduled;
   return (
     <span className={cn("px-2 py-1 text-xs rounded-full font-medium", config.className)}>
       {config.label}
@@ -79,7 +80,7 @@ const AppointmentCard: React.FC<AppointmentCardProps> = ({ appointment, onUpdate
           <Button 
             size="sm" 
             variant="outline" 
-            className="w-full text-blue-600 hover:bg-blue-100"
+            className="w-full text-primary hover:bg-primary/10"
             onClick={() => handleStatusChange("arrived")}
           >
             <Users className="w-4 h-4 mr-1" /> 
@@ -165,7 +166,6 @@ const AppointmentCard: React.FC<AppointmentCardProps> = ({ appointment, onUpdate
     );
   };
 
-  console.log('wait_start_time:', appointment.wait_start_time);
 
   return (
     <>

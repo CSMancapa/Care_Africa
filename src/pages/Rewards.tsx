@@ -31,6 +31,7 @@ import {
 } from '@/lib/db/rewards';
 import { listPatients } from '@/lib/db/patients';
 import { listProducts } from '@/lib/db/products';
+import { formatRand } from '@/lib/currency';
 
 export interface Service {
   id: string;
@@ -242,7 +243,7 @@ const ViewDetailsModal = ({
             <div className="border-t pt-4">
               <h4 className="font-medium mb-2">Service Details</h4>
               <p className="text-sm text-gray-600">{service.description}</p>
-              <p className="text-sm text-gray-500 mt-2">Price: R{service.price}</p>
+              <p className="text-sm text-gray-500 mt-2">Price: {formatRand(service.price)}</p>
             </div>
           )}
         </div>
@@ -448,7 +449,7 @@ const ArchivedRewardsModal = ({
                       </div>
                     </div>
                     <div className="text-sm text-gray-500">
-                      Archived {new Date(reward.deleted_at!).toLocaleDateString()}
+                      Archived {format(new Date(reward.deleted_at!), "d MMM yyyy")}
                     </div>
                   </div>
                   <Button
@@ -510,7 +511,7 @@ const ClaimsEmptyState = () => (
     </div>
 
     {/* Content */}
-    <h3 className="text-2xl font-bold bg-gradient-to-r from-secondary to-primary bg-clip-text text-transparent mb-3">
+    <h3 className="text-2xl font-bold tracking-tight text-ink mb-3">
       No Claims History Yet
     </h3>
     <p className="text-gray-500 text-center mb-8 max-w-md">
@@ -888,7 +889,7 @@ const Rewards = () => {
       </div>
 
       {/* Content */}
-      <h3 className="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent mb-3">
+      <h3 className="text-2xl font-bold tracking-tight text-ink mb-3">
         Start Rewarding Your Patients
       </h3>
       <p className="text-gray-500 text-center mb-8 max-w-md">
@@ -991,7 +992,7 @@ const Rewards = () => {
       <div className="space-y-8">
         <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
+            <h1 className="text-3xl font-extrabold tracking-tight text-ink">
               Rewards Management
             </h1>
             <p className="text-gray-600 mt-2">

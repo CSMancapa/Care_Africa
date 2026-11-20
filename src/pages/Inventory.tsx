@@ -35,6 +35,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import ProductFormModal, { type Product as FormProduct } from "@/components/Products/ProductFormModal";
+import { formatRand, formatRandCompact } from '@/lib/currency';
 
 // Same shape as the product form and lib/db/products.ts
 type Product = FormProduct;
@@ -157,7 +158,7 @@ const Inventory: React.FC = () => {
               <td className="px-6 py-4">{product.sku}</td>
               <td className="px-6 py-4">{product.category}</td>
               <td className="px-6 py-4">{product.current_stock}</td>
-              <td className="px-6 py-4">R{product.price.toFixed(2)}</td>
+              <td className="px-6 py-4">{formatRand(product.price)}</td>
               <td className="px-6 py-4">
                 {product.cost_price ? (
                   <span className="text-green-600">
@@ -219,7 +220,7 @@ const Inventory: React.FC = () => {
             <p className="text-sm text-gray-500">SKU: {product.sku}</p>
             <div className="flex justify-between items-center">
               <span className="text-sm font-medium text-gray-900">
-                R{product.price.toFixed(2)}
+                {formatRand(product.price)}
                 {product.cost_price && (
                   <span className="ml-2 text-xs text-green-600">
                     ({calculateMargin(product.price, product.cost_price)}% margin)
@@ -231,7 +232,7 @@ const Inventory: React.FC = () => {
               </span>
             </div>
             <div className="flex justify-between items-center pt-2">
-              <span className="px-2 py-1 bg-blue-100 text-blue-800 text-xs rounded-full">
+              <span className="px-2 py-1 bg-primary/10 text-primary text-xs rounded-full font-medium">
                 {product.category}
               </span>
               <DropdownMenu>
@@ -304,7 +305,7 @@ const Inventory: React.FC = () => {
       <div className="space-y-8">
         <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">Inventory Management</h1>
+            <h1 className="text-3xl font-extrabold tracking-tight text-ink">Inventory Management</h1>
             <p className="text-gray-600 mt-2">
               Manage your products and track inventory levels
             </p>
@@ -415,7 +416,7 @@ const Inventory: React.FC = () => {
               <div>
                 <p className="text-sm text-gray-600">Total Value</p>
                 <h3 className="text-2xl font-semibold text-gray-900">
-                  R{formatNumber(products.reduce((sum, product) => 
+                  {formatRandCompact(products.reduce((sum, product) => 
                     sum + (product.price * product.current_stock), 0))}
                 </h3>
               </div>
@@ -424,8 +425,8 @@ const Inventory: React.FC = () => {
 
           <Card className="p-6">
             <div className="flex items-center gap-4">
-              <div className="p-3 bg-orange-100 rounded-lg">
-                <Package className="w-6 h-6 text-orange-600" />
+              <div className="p-3 bg-primary/10 rounded-lg">
+                <Package className="w-6 h-6 text-primary" />
               </div>
               <div>
                 <p className="text-sm text-gray-600">Top Category</p>

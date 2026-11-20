@@ -48,6 +48,7 @@ import * as z from "zod";
 import { AppointmentData } from '@/types/appointment';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DoctorProfile } from '@/types/practice';
+import { formatRand } from '@/lib/currency';
 
 const timeSlots = [
   { time: "09:00", available: true },
@@ -390,7 +391,7 @@ const AddAppointmentModal: React.FC<AddAppointmentModalProps> = ({
                               <div>
                                 <h4 className="font-medium">{service.name}</h4>
                                 <div className="flex items-center gap-3 mt-1 text-sm text-muted-foreground">
-                                  <span>R{service.price}</span>
+                                  <span>{formatRand(service.price)}</span>
                                   <span>•</span>
                                   <span>{service.duration}min</span>
                                 </div>
@@ -686,19 +687,19 @@ const AddAppointmentModal: React.FC<AddAppointmentModalProps> = ({
                     {selectedServices.length > 0 && (
                       <div className="space-y-1">
                         <div>
-                          Subtotal: R{services
+                          Subtotal: {formatRand(services
                             .filter(s => selectedServices.includes(s.id))
-                            .reduce((sum, s) => sum + s.price, 0)}
+                            .reduce((sum, s) => sum + s.price, 0))}
                         </div>
                         {discountAmount > 0 && (
                           <div className="text-green-600">
-                            Discount: -R{discountAmount}
+                            Discount: −{formatRand(discountAmount)}
                           </div>
                         )}
                         <div className="font-medium">
-                          Total: R{services
+                          Total: {formatRand((services
                             .filter(s => selectedServices.includes(s.id))
-                            .reduce((sum, s) => sum + s.price, 0) - discountAmount}
+                            .reduce((sum, s) => sum + s.price, 0) - discountAmount))}
                         </div>
                       </div>
                     )}
