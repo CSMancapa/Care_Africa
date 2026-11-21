@@ -16,6 +16,10 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import Inventory from "./pages/Inventory";
 import Register from "./pages/Register";
 import AcceptInvite from "./pages/AcceptInvite";
+import TwoStepSetup from "./pages/TwoStepSetup";
+import TwoStepVerify from "./pages/TwoStepVerify";
+import ForgotPassword from "./pages/ForgotPassword";
+import ResetPassword from "./pages/ResetPassword";
 import AuthCallback from './pages/AuthCallback';
 import { PracticeProvider, usePractice } from "./context/PracticeContext";
 import { ConfigProvider } from "antd";
@@ -60,10 +64,18 @@ const App = () => (
         <Routes>
           {/* Public routes */}
           <Route path="/login" element={<Login />} />
-          <Route path="/onboarding" element={<Onboarding />} />
+          <Route path="/onboarding" element={
+            <ProtectedRoute>
+              <Onboarding />
+            </ProtectedRoute>
+          } />
           <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/register" element={<Register />} />
           <Route path="/invite/:token" element={<AcceptInvite />} />
+          <Route path="/two-step/setup" element={<TwoStepSetup />} />
+          <Route path="/two-step/verify" element={<TwoStepVerify />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
           {/* Protected routes */}
           <Route path="/" element={
             <ProtectedRoute>

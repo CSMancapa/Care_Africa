@@ -16,6 +16,7 @@ import { AddressAutocomplete } from '@/components/AddressAutocomplete';
 import { BrandingSettings } from '@/components/Settings/BrandingSettings';
 import { ModulesSettings } from '@/components/Settings/ModulesSettings';
 import { TeamSettings } from '@/components/Settings/TeamSettings';
+import { MySecuritySettings } from '@/components/Settings/MySecuritySettings';
 import { PRACTICE_TYPES, PRACTICE_TYPE_GROUPS } from '@/lib/practiceTypes';
 import { useModules } from '@/lib/modules';
 import { usePractice } from '@/context/PracticeContext';
@@ -146,6 +147,7 @@ export default function Settings() {
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="hours">Business Hours</TabsTrigger>
             <TabsTrigger value="team">Team</TabsTrigger>
+            <TabsTrigger value="security">My security</TabsTrigger>
             <TabsTrigger value="modules">Modules</TabsTrigger>
             <TabsTrigger value="services">{showsMedicalAids ? 'Services & Medical Aids' : 'Services'}</TabsTrigger>
             <TabsTrigger value="rewards">Rewards Program</TabsTrigger>
@@ -159,6 +161,10 @@ export default function Settings() {
               onSave={(data) => runSave((id) => saveGeneral(id, data), true)}
               saving={saving}
             />
+          </TabsContent>
+
+          <TabsContent value="security">
+            <MySecuritySettings />
           </TabsContent>
 
           <TabsContent value="team">

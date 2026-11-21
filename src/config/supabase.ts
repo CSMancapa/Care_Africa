@@ -11,6 +11,9 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
     autoRefreshToken: true,
     persistSession: true,
-    detectSessionInUrl: true
+    detectSessionInUrl: true,
+    // Recovery codes for two-step sign-in (Supabase marks these experimental;
+    // they must also be switched on in the Supabase dashboard).
+    experimental: { recoveryCodes: true },
   }
 }); 

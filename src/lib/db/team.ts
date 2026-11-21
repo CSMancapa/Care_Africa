@@ -109,3 +109,9 @@ export async function acceptInvitation(token: string): Promise<string> {
   fail(error);
   return data as string;
 }
+
+/** Clear a colleague's authenticator and recovery codes; they set 2FA up again at next sign-in. */
+export async function resetTwoStep(memberId: string) {
+  const { error } = await supabase.rpc("reset_member_two_step", { p_member: memberId });
+  fail(error);
+}

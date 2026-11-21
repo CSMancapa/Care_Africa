@@ -23,6 +23,8 @@ returns text language plpgsql as $$
 declare out text;
 begin
   perform set_config('request.jwt.claim.sub', actor::text, true);
+  -- Signed in with two-step sign-in completed (migration 0008).
+  perform set_config('request.jwt.claims', json_build_object('sub', actor::text, 'aal', 'aal2')::text, true);
   perform set_config('role', 'authenticated', true);
   execute q into out;
   perform set_config('role', 'postgres', true);

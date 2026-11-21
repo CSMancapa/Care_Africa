@@ -10,6 +10,7 @@ import {
   MoreHorizontal,
   RefreshCw,
   ShieldCheck,
+  Smartphone,
   UserPlus,
   X,
 } from "lucide-react";
@@ -39,6 +40,7 @@ import {
   createInvitation,
   listPendingInvitations,
   listTeam,
+  resetTwoStep,
   revokeInvitation,
   updateTeamMember,
   type PendingInvitation,
@@ -131,7 +133,7 @@ function InviteLinkDialog({
         <DialogHeader>
           <DialogTitle>Send this link to {invite.email}</DialogTitle>
           <DialogDescription>
-            They'll create their own login with this email address. The link works
+            They'll create their own login with this email address and set up two-step sign-in. The link works
             once, until {format(new Date(invite.expiresAt), "d MMMM yyyy")}.
           </DialogDescription>
         </DialogHeader>
@@ -327,6 +329,22 @@ export function TeamSettings() {
                             </DropdownMenuItem>
                           ))}
                           <DropdownMenuSeparator />
+                          {!isMe && (
+                            <DropdownMenuItem
+                              onClick={async () => {
+                                const who = m.name || m.email;
+                                if (!window.confirm(`Reset ${who}'s two-step sign-in? They'll be signed out everywhere and will set up their authenticator app again next time they sign in. Only do this if you're sure it's really them asking.`)) return;
+                                try {
+                                  await resetTwoStep(m.id);
+                                  toast.success(`${who} will set up two-step sign-in again when they next sign in`);
+                                } catch (error) {
+                                  toast.error(error instanceof Error ? error.message : "Couldn't reset");
+                                }
+                              }}
+                            >
+                              <Smartphone className="mr-2 h-4 w-4" /> Reset two-step sign-in
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuItem
                             className="text-red-600 focus:text-red-600"
                             onClick={() => {

@@ -1,0 +1,1777 @@
+From da666297c83e5c50fe236b1d1c4ed8af91ce8b4c Mon Sep 17 00:00:00 2001
+From: Care Africa <dev@careafrica.local>
+Date: Sat, 21 Nov 2026 10:20:32 +0200
+Subject: [PATCH] Two-step sign-in, recovery codes and password reset
+
+- Migration 0008: practice data needs a two-step session (aal2) for everyone;
+  practices.mfa_required (Care Africa only; off for the demo practice);
+  my_mfa_requirement(); reset_member_two_step() for practice admins
+- Sign-in: authenticator app setup (QR or key), code entry, recovery codes
+  (show once, copy/download/print), recovery-code sign-in
+- Forgot / reset password; accounts with 2FA must pass it before choosing a
+  new password
+- Settings > My security (recovery codes left, new codes, change password);
+  Team menu: reset a colleague's two-step sign-in
+- Onboarding now behind sign-in and 2FA; supabase-js >= 2.117.3
+- Tests: existing tests sign in with 2FA; 20 new checks (135 in total)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EwPyWPTXSAWwnbXCzMZAVM
+---
+ package-lock.json                             |   2 +-
+ package.json                                  |   2 +-
+ src/App.tsx                                   |  14 +-
+ src/components/ProtectedRoute.tsx             |  42 ++--
+ .../Settings/MySecuritySettings.tsx           | 171 +++++++++++++
+ src/components/Settings/TeamSettings.tsx      |  20 +-
+ src/components/twostep/CodeInput.tsx          |  33 +++
+ src/components/twostep/RecoveryCodesPanel.tsx |  73 ++++++
+ src/config/supabase.ts                        |   5 +-
+ src/lib/db/team.ts                            |   6 +
+ src/lib/twoStep.ts                            | 124 +++++++++
+ src/pages/ForgotPassword.tsx                  |  93 +++++++
+ src/pages/Login.tsx                           |   8 +-
+ src/pages/ResetPassword.tsx                   | 138 ++++++++++
+ src/pages/Settings.tsx                        |   6 +
+ src/pages/TwoStepSetup.tsx                    | 235 ++++++++++++++++++
+ src/pages/TwoStepVerify.tsx                   | 133 ++++++++++
+ supabase/demo/seed_demo.sql                   |   1 +
+ supabase/migrations/0008_two_step_signin.sql  | 149 +++++++++++
+ supabase/tests/practice_modules_test.sql      |   4 +
+ supabase/tests/rls_test.sql                   |   2 +
+ supabase/tests/settings_branding_test.sql     |   2 +
+ supabase/tests/staff_invites_test.sql         |   4 +
+ supabase/tests/two_step_signin_test.sql       | 142 +++++++++++
+ supabase/tests/visits_rewards_sales_test.sql  |   2 +
+ 25 files changed, 1390 insertions(+), 21 deletions(-)
+ create mode 100644 src/components/Settings/MySecuritySettings.tsx
+ create mode 100644 src/components/twostep/CodeInput.tsx
+ create mode 100644 src/components/twostep/RecoveryCodesPanel.tsx
+ create mode 100644 src/lib/twoStep.ts
+ create mode 100644 src/pages/ForgotPassword.tsx
+ create mode 100644 src/pages/ResetPassword.tsx
+ create mode 100644 src/pages/TwoStepSetup.tsx
+ create mode 100644 src/pages/TwoStepVerify.tsx
+ create mode 100644 supabase/migrations/0008_two_step_signin.sql
+ create mode 100644 supabase/tests/two_step_signin_test.sql
+
+diff --git a/package-lock.json b/package-lock.json
+index 8eb528b..d1fa878 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -24,7 +24,7 @@
+         "@radix-ui/react-tabs": "^1.1.0",
+         "@radix-ui/react-toast": "^1.2.1",
+         "@radix-ui/react-tooltip": "^1.1.4",
+-        "@supabase/supabase-js": "^2.48.1",
++        "@supabase/supabase-js": "^2.117.3",
+         "@tanstack/react-query": "^5.66.0",
+         "antd": "^5.24.0",
+         "class-variance-authority": "^0.7.1",
+diff --git a/package.json b/package.json
+index 955c46f..cd25e5b 100644
+--- a/package.json
++++ b/package.json
+@@ -27,7 +27,7 @@
+     "@radix-ui/react-tabs": "^1.1.0",
+     "@radix-ui/react-toast": "^1.2.1",
+     "@radix-ui/react-tooltip": "^1.1.4",
+-    "@supabase/supabase-js": "^2.48.1",
++    "@supabase/supabase-js": "^2.117.3",
+     "@tanstack/react-query": "^5.66.0",
+     "antd": "^5.24.0",
+     "class-variance-authority": "^0.7.1",
+diff --git a/src/App.tsx b/src/App.tsx
+index 5688111..288192f 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -16,6 +16,10 @@ import ProtectedRoute from "./components/ProtectedRoute";
+ import Inventory from "./pages/Inventory";
+ import Register from "./pages/Register";
+ import AcceptInvite from "./pages/AcceptInvite";
++import TwoStepSetup from "./pages/TwoStepSetup";
++import TwoStepVerify from "./pages/TwoStepVerify";
++import ForgotPassword from "./pages/ForgotPassword";
++import ResetPassword from "./pages/ResetPassword";
+ import AuthCallback from './pages/AuthCallback';
+ import { PracticeProvider, usePractice } from "./context/PracticeContext";
+ import { ConfigProvider } from "antd";
+@@ -60,10 +64,18 @@ const App = () => (
+         <Routes>
+           {/* Public routes */}
+           <Route path="/login" element={<Login />} />
+-          <Route path="/onboarding" element={<Onboarding />} />
++          <Route path="/onboarding" element={
++            <ProtectedRoute>
++              <Onboarding />
++            </ProtectedRoute>
++          } />
+           <Route path="/verify-email" element={<VerifyEmail />} />
+           <Route path="/register" element={<Register />} />
+           <Route path="/invite/:token" element={<AcceptInvite />} />
++          <Route path="/two-step/setup" element={<TwoStepSetup />} />
++          <Route path="/two-step/verify" element={<TwoStepVerify />} />
++          <Route path="/forgot-password" element={<ForgotPassword />} />
++          <Route path="/reset-password" element={<ResetPassword />} />
+           {/* Protected routes */}
+           <Route path="/" element={
+             <ProtectedRoute>
+diff --git a/src/components/ProtectedRoute.tsx b/src/components/ProtectedRoute.tsx
+index b814b42..2c1aa74 100644
+--- a/src/components/ProtectedRoute.tsx
++++ b/src/components/ProtectedRoute.tsx
+@@ -2,37 +2,51 @@ import { useEffect, useState } from "react";
+ import { Navigate, useLocation } from "react-router-dom";
+ import { supabase } from "@/config/supabase";
+ import { Loader2 } from "lucide-react";
++import { getTwoStepStatus, type TwoStepStatus } from "@/lib/twoStep";
+ 
++/**
++ * Lets someone in only when they're signed in AND have done two-step
++ * sign-in where it's required. Otherwise sends them to sign in, to set up
++ * their authenticator app, or to enter its code.
++ */
+ export default function ProtectedRoute({ children }: { children: React.ReactNode }) {
+-  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
++  const [state, setState] = useState<"loading" | "signed-out" | TwoStepStatus>("loading");
+   const location = useLocation();
+ 
+   useEffect(() => {
+-    const checkAuth = async () => {
++    let cancelled = false;
++    const check = async () => {
+       const { data: { session } } = await supabase.auth.getSession();
+-      setIsAuthenticated(!!session);
++      if (!session) {
++        if (!cancelled) setState("signed-out");
++        return;
++      }
++      const status = await getTwoStepStatus();
++      if (!cancelled) setState(status);
+     };
+ 
+-    checkAuth();
+-
+-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+-      setIsAuthenticated(!!session);
++    check();
++    const { data: { subscription } } = supabase.auth.onAuthStateChange(() => {
++      check();
+     });
+ 
+-    return () => subscription.unsubscribe();
++    return () => {
++      cancelled = true;
++      subscription.unsubscribe();
++    };
+   }, []);
+ 
+-  if (isAuthenticated === null) {
++  if (state === "loading") {
+     return (
+       <div className="h-screen w-screen flex items-center justify-center">
+-        <Loader2 className="h-8 w-8 animate-spin" />
++        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+       </div>
+     );
+   }
+ 
+-  if (!isAuthenticated) {
+-    return <Navigate to="/login" state={{ from: location }} replace />;
+-  }
++  if (state === "signed-out") return <Navigate to="/login" state={{ from: location }} replace />;
++  if (state === "setup") return <Navigate to="/two-step/setup" state={{ from: location }} replace />;
++  if (state === "verify") return <Navigate to="/two-step/verify" state={{ from: location }} replace />;
+ 
+   return <>{children}</>;
+-} 
+\ No newline at end of file
++}
+diff --git a/src/components/Settings/MySecuritySettings.tsx b/src/components/Settings/MySecuritySettings.tsx
+new file mode 100644
+index 0000000..bcfe073
+--- /dev/null
++++ b/src/components/Settings/MySecuritySettings.tsx
+@@ -0,0 +1,171 @@
++import { useEffect, useState } from "react";
++import { toast } from "sonner";
++import { format } from "date-fns";
++import { KeyRound, Loader2, ShieldCheck, Smartphone } from "lucide-react";
++import { supabase } from "@/config/supabase";
++import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
++import { Button } from "@/components/ui/button";
++import { Label } from "@/components/ui/label";
++import { PasswordInput } from "@/components/auth/PasswordInput";
++import {
++  Dialog,
++  DialogContent,
++  DialogDescription,
++  DialogFooter,
++  DialogHeader,
++  DialogTitle,
++} from "@/components/ui/dialog";
++import { RecoveryCodesPanel } from "@/components/twostep/RecoveryCodesPanel";
++import { getAuthenticator, getRecoveryCodesStatus, makeRecoveryCodes } from "@/lib/twoStep";
++
++/** Settings → My security: the signed-in person's own login. */
++export function MySecuritySettings() {
++  const [email, setEmail] = useState<string>();
++  const [authenticatorSince, setAuthenticatorSince] = useState<string | null | undefined>(undefined);
++  const [codesStatus, setCodesStatus] = useState<{ total: number; remaining: number } | null | undefined>(undefined);
++  const [newCodes, setNewCodes] = useState<string[] | null>(null);
++  const [making, setMaking] = useState(false);
++  const [password, setPassword] = useState("");
++  const [confirm, setConfirm] = useState("");
++  const [saving, setSaving] = useState(false);
++
++  const load = async () => {
++    const [{ data }, factor, status] = await Promise.all([
++      supabase.auth.getUser(),
++      getAuthenticator(),
++      getRecoveryCodesStatus(),
++    ]);
++    setEmail(data.user?.email);
++    setAuthenticatorSince(factor ? factor.created_at : null);
++    setCodesStatus(status);
++  };
++
++  useEffect(() => {
++    load();
++  }, []);
++
++  const newRecoveryCodes = async () => {
++    setMaking(true);
++    try {
++      const result = await makeRecoveryCodes();
++      if ("unavailable" in result) {
++        toast.error("Recovery codes aren't switched on for Care Africa yet.");
++        return;
++      }
++      setNewCodes(result.codes);
++      load();
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't make new codes");
++    } finally {
++      setMaking(false);
++    }
++  };
++
++  const changePassword = async (e: React.FormEvent) => {
++    e.preventDefault();
++    if (password.length < 8) return toast.error("Use at least 8 characters");
++    if (password !== confirm) return toast.error("The two passwords don't match");
++    setSaving(true);
++    try {
++      const { error } = await supabase.auth.updateUser({ password });
++      if (error) throw error;
++      setPassword("");
++      setConfirm("");
++      toast.success("Password changed");
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't change your password");
++    } finally {
++      setSaving(false);
++    }
++  };
++
++  const low = codesStatus && codesStatus.remaining <= 2;
++
++  return (
++    <div className="space-y-6">
++      <Card>
++        <CardHeader>
++          <CardTitle className="text-lg">Two-step sign-in</CardTitle>
++          <CardDescription>Signing in to {email ?? "your account"} needs your password and your phone.</CardDescription>
++        </CardHeader>
++        <CardContent className="space-y-3">
++          <div className="flex items-center gap-4 rounded-lg border border-border px-4 py-3">
++            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
++              <Smartphone className="h-[18px] w-[18px] text-primary" />
++            </span>
++            <div className="min-w-0 flex-1 text-sm">
++              <p className="font-semibold text-ink">Authenticator app</p>
++              <p className="text-xs text-muted-foreground">
++                {authenticatorSince === undefined
++                  ? "Checking…"
++                  : authenticatorSince
++                  ? `On since ${format(new Date(authenticatorSince), "d MMM yyyy")}`
++                  : "Not set up. You'll be asked to add one the next time you sign in."}
++              </p>
++            </div>
++            {authenticatorSince && <ShieldCheck className="h-5 w-5 text-emerald-600" />}
++          </div>
++
++          <div className="flex flex-wrap items-center gap-4 rounded-lg border border-border px-4 py-3">
++            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
++              <KeyRound className="h-[18px] w-[18px] text-primary" />
++            </span>
++            <div className="min-w-0 flex-1 text-sm">
++              <p className="font-semibold text-ink">Recovery codes</p>
++              <p className={`text-xs ${low ? "font-semibold text-amber-700" : "text-muted-foreground"}`}>
++                {codesStatus === undefined
++                  ? "Checking…"
++                  : codesStatus
++                  ? `${codesStatus.remaining} of ${codesStatus.total} left${low ? ". Make new ones soon." : ""}`
++                  : "None yet. Make a set in case you lose your phone."}
++              </p>
++            </div>
++            <Button variant="outline" size="sm" disabled={making || !authenticatorSince} onClick={newRecoveryCodes}>
++              {making ? <Loader2 className="h-4 w-4 animate-spin" /> : codesStatus ? "Make new codes" : "Make codes"}
++            </Button>
++          </div>
++          {codesStatus && (
++            <p className="text-xs text-muted-foreground">Making new codes stops your old ones from working.</p>
++          )}
++        </CardContent>
++      </Card>
++
++      <Card>
++        <CardHeader>
++          <CardTitle className="text-lg">Change password</CardTitle>
++          <CardDescription>Use at least 8 characters. A short sentence is easy to remember and hard to guess.</CardDescription>
++        </CardHeader>
++        <CardContent>
++          <form onSubmit={changePassword} className="grid gap-4 sm:max-w-md">
++            <div className="space-y-2">
++              <Label htmlFor="new-password">New password</Label>
++              <PasswordInput id="new-password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
++            </div>
++            <div className="space-y-2">
++              <Label htmlFor="confirm-password">Type it again</Label>
++              <PasswordInput id="confirm-password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
++            </div>
++            <div>
++              <Button type="submit" disabled={saving || !password}>
++                {saving ? "Saving…" : "Change password"}
++              </Button>
++            </div>
++          </form>
++        </CardContent>
++      </Card>
++
++      <Dialog open={!!newCodes} onOpenChange={(open) => !open && setNewCodes(null)}>
++        <DialogContent className="sm:max-w-md">
++          <DialogHeader>
++            <DialogTitle>Your new recovery codes</DialogTitle>
++            <DialogDescription>Your old codes no longer work. Save these now: you won't see them again.</DialogDescription>
++          </DialogHeader>
++          {newCodes && <RecoveryCodesPanel codes={newCodes} email={email} />}
++          <DialogFooter>
++            <Button onClick={() => setNewCodes(null)}>I've saved them</Button>
++          </DialogFooter>
++        </DialogContent>
++      </Dialog>
++    </div>
++  );
++}
+diff --git a/src/components/Settings/TeamSettings.tsx b/src/components/Settings/TeamSettings.tsx
+index c96ae1a..2cba1b2 100644
+--- a/src/components/Settings/TeamSettings.tsx
++++ b/src/components/Settings/TeamSettings.tsx
+@@ -10,6 +10,7 @@ import {
+   MoreHorizontal,
+   RefreshCw,
+   ShieldCheck,
++  Smartphone,
+   UserPlus,
+   X,
+ } from "lucide-react";
+@@ -39,6 +40,7 @@ import {
+   createInvitation,
+   listPendingInvitations,
+   listTeam,
++  resetTwoStep,
+   revokeInvitation,
+   updateTeamMember,
+   type PendingInvitation,
+@@ -131,7 +133,7 @@ function InviteLinkDialog({
+         <DialogHeader>
+           <DialogTitle>Send this link to {invite.email}</DialogTitle>
+           <DialogDescription>
+-            They'll create their own login with this email address. The link works
++            They'll create their own login with this email address and set up two-step sign-in. The link works
+             once, until {format(new Date(invite.expiresAt), "d MMMM yyyy")}.
+           </DialogDescription>
+         </DialogHeader>
+@@ -327,6 +329,22 @@ export function TeamSettings() {
+                             </DropdownMenuItem>
+                           ))}
+                           <DropdownMenuSeparator />
++                          {!isMe && (
++                            <DropdownMenuItem
++                              onClick={async () => {
++                                const who = m.name || m.email;
++                                if (!window.confirm(`Reset ${who}'s two-step sign-in? They'll be signed out everywhere and will set up their authenticator app again next time they sign in. Only do this if you're sure it's really them asking.`)) return;
++                                try {
++                                  await resetTwoStep(m.id);
++                                  toast.success(`${who} will set up two-step sign-in again when they next sign in`);
++                                } catch (error) {
++                                  toast.error(error instanceof Error ? error.message : "Couldn't reset");
++                                }
++                              }}
++                            >
++                              <Smartphone className="mr-2 h-4 w-4" /> Reset two-step sign-in
++                            </DropdownMenuItem>
++                          )}
+                           <DropdownMenuItem
+                             className="text-red-600 focus:text-red-600"
+                             onClick={() => {
+diff --git a/src/components/twostep/CodeInput.tsx b/src/components/twostep/CodeInput.tsx
+new file mode 100644
+index 0000000..8e72966
+--- /dev/null
++++ b/src/components/twostep/CodeInput.tsx
+@@ -0,0 +1,33 @@
++import { Input } from "@/components/ui/input";
++import { cn } from "@/lib/utils";
++
++/** The 6-digit code from an authenticator app. Phones can autofill it. */
++export function CodeInput({
++  value,
++  onChange,
++  autoFocus = true,
++  id = "code",
++  className,
++}: {
++  value: string;
++  onChange: (v: string) => void;
++  autoFocus?: boolean;
++  id?: string;
++  className?: string;
++}) {
++  return (
++    <Input
++      id={id}
++      inputMode="numeric"
++      autoComplete="one-time-code"
++      pattern="[0-9]{6}"
++      maxLength={6}
++      autoFocus={autoFocus}
++      placeholder="000000"
++      value={value}
++      onChange={(e) => onChange(e.target.value.replace(/\D/g, "").slice(0, 6))}
++      className={cn("tabular h-14 text-center text-2xl font-semibold tracking-[0.5em] placeholder:tracking-[0.5em] placeholder:text-muted-foreground/40", className)}
++      aria-label="6-digit code"
++    />
++  );
++}
+diff --git a/src/components/twostep/RecoveryCodesPanel.tsx b/src/components/twostep/RecoveryCodesPanel.tsx
+new file mode 100644
+index 0000000..e05e8c6
+--- /dev/null
++++ b/src/components/twostep/RecoveryCodesPanel.tsx
+@@ -0,0 +1,73 @@
++import { useState } from "react";
++import { Check, Copy, Download, Printer } from "lucide-react";
++import { toast } from "sonner";
++import { Button } from "@/components/ui/button";
++import { formatRecoveryCode } from "@/lib/twoStep";
++
++/**
++ * Shows a new set of recovery codes once, with ways to keep them. Each code
++ * gets someone back in once if they lose their phone.
++ */
++export function RecoveryCodesPanel({ codes, email }: { codes: string[]; email?: string }) {
++  const [copied, setCopied] = useState(false);
++  const pretty = codes.map(formatRecoveryCode);
++  const text =
++    `Care Africa recovery codes${email ? ` for ${email}` : ""}\n` +
++    `Made ${new Date().toLocaleDateString("en-ZA")}. Each code works once.\n\n` +
++    pretty.join("\n");
++
++  const copy = async () => {
++    try {
++      await navigator.clipboard.writeText(text);
++      setCopied(true);
++      setTimeout(() => setCopied(false), 2000);
++    } catch {
++      toast.error("Couldn't copy. Download or print them instead.");
++    }
++  };
++
++  const download = () => {
++    const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
++    const a = document.createElement("a");
++    a.href = url;
++    a.download = "care-africa-recovery-codes.txt";
++    a.click();
++    URL.revokeObjectURL(url);
++  };
++
++  const print = () => {
++    const w = window.open("", "_blank", "width=480,height=640");
++    if (!w) return;
++    w.document.write(
++      `<pre style="font: 15px/1.8 ui-monospace, monospace; padding: 24px">${text.replace(/</g, "&lt;")}</pre>`
++    );
++    w.document.close();
++    w.focus();
++    w.print();
++  };
++
++  return (
++    <div className="space-y-3">
++      <ol className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-xl border border-border bg-muted/40 px-4 py-3.5 font-mono text-[13px] text-ink">
++        {pretty.map((c, i) => (
++          <li key={c} className="flex gap-2 whitespace-nowrap">
++            <span className="w-5 text-right text-muted-foreground/60">{i + 1}.</span>
++            <span className="tracking-wide">{c}</span>
++          </li>
++        ))}
++      </ol>
++      <div className="grid grid-cols-3 gap-2">
++        <Button type="button" variant="outline" size="sm" onClick={copy} className="gap-1.5">
++          {copied ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
++          {copied ? "Copied" : "Copy"}
++        </Button>
++        <Button type="button" variant="outline" size="sm" onClick={download} className="gap-1.5">
++          <Download className="h-4 w-4" /> Download
++        </Button>
++        <Button type="button" variant="outline" size="sm" onClick={print} className="gap-1.5">
++          <Printer className="h-4 w-4" /> Print
++        </Button>
++      </div>
++    </div>
++  );
++}
+diff --git a/src/config/supabase.ts b/src/config/supabase.ts
+index 6b2e51b..f6ecffe 100644
+--- a/src/config/supabase.ts
++++ b/src/config/supabase.ts
+@@ -11,6 +11,9 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+   auth: {
+     autoRefreshToken: true,
+     persistSession: true,
+-    detectSessionInUrl: true
++    detectSessionInUrl: true,
++    // Recovery codes for two-step sign-in (Supabase marks these experimental;
++    // they must also be switched on in the Supabase dashboard).
++    experimental: { recoveryCodes: true },
+   }
+ }); 
+\ No newline at end of file
+diff --git a/src/lib/db/team.ts b/src/lib/db/team.ts
+index 9cf4675..2c78a67 100644
+--- a/src/lib/db/team.ts
++++ b/src/lib/db/team.ts
+@@ -109,3 +109,9 @@ export async function acceptInvitation(token: string): Promise<string> {
+   fail(error);
+   return data as string;
+ }
++
++/** Clear a colleague's authenticator and recovery codes; they set 2FA up again at next sign-in. */
++export async function resetTwoStep(memberId: string) {
++  const { error } = await supabase.rpc("reset_member_two_step", { p_member: memberId });
++  fail(error);
++}
+diff --git a/src/lib/twoStep.ts b/src/lib/twoStep.ts
+new file mode 100644
+index 0000000..bb9acce
+--- /dev/null
++++ b/src/lib/twoStep.ts
+@@ -0,0 +1,124 @@
++import { supabase } from "@/config/supabase";
++
++/**
++ * Two-step sign-in (2FA): password + a code from an authenticator app.
++ * Required for everyone at a practice (decision of 21 Nov 2026), except
++ * practices Care Africa has exempted (the shared demo login). The database
++ * enforces it too (migration 0008): without the second step, no practice
++ * data is visible.
++ */
++
++export type TwoStepStatus = "ok" | "setup" | "verify";
++
++let cache: { token: string; status: TwoStepStatus } | null = null;
++
++/** Forget the cached answer, e.g. after setting up or verifying. */
++export function clearTwoStepCache() {
++  cache = null;
++}
++
++async function isRequired(): Promise<boolean> {
++  const { data, error } = await supabase.rpc("my_mfa_requirement");
++  // Before migration 0008 is applied the function doesn't exist: don't lock
++  // anyone out.
++  if (error) return false;
++  return !!data;
++}
++
++/** What the signed-in person still has to do before using the app. */
++export async function getTwoStepStatus(): Promise<TwoStepStatus> {
++  const { data: sessionData } = await supabase.auth.getSession();
++  const token = sessionData.session?.access_token;
++  if (!token) return "ok";
++  if (cache?.token === token) return cache.status;
++
++  const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
++  let status: TwoStepStatus = "ok";
++  if (aal?.currentLevel !== "aal2") {
++    if (aal?.nextLevel === "aal2") status = "verify"; // has an authenticator: ask for the code
++    else if (await isRequired()) status = "setup"; // must add one first
++  }
++  cache = { token, status };
++  return status;
++}
++
++/** Their verified authenticator app, if any. */
++export async function getAuthenticator() {
++  const { data } = await supabase.auth.mfa.listFactors();
++  return data?.totp?.[0] ?? null;
++}
++
++/**
++ * Check a 6-digit code from the authenticator app (upgrades the session).
++ * During setup, pass the new (not yet confirmed) authenticator's id.
++ */
++export async function verifyAuthenticatorCode(code: string, factorId?: string) {
++  const id = factorId ?? (await getAuthenticator())?.id;
++  if (!id) throw new Error("No authenticator app is set up for this login");
++  const { error } = await supabase.auth.mfa.challengeAndVerify({ factorId: id, code: code.trim() });
++  if (error) throw new Error(friendlyError(error.message));
++  clearTwoStepCache();
++}
++
++/** Use one recovery code instead (each works once). */
++export async function verifyRecoveryCode(code: string) {
++  const { error } = await supabase.auth.mfa.recoveryCodes.verify({ code });
++  if (error) {
++    const e = error as { code?: string; message: string };
++    if (e.code === "mfa_recovery_codes_locked") {
++      throw new Error("Too many wrong codes. Wait a few minutes and try again, or ask your practice admin to reset your two-step sign-in.");
++    }
++    throw new Error(e.code === "mfa_verification_failed" ? "That recovery code didn't work. It may already have been used." : e.message);
++  }
++  clearTwoStepCache();
++}
++
++export type RecoveryCodesResult = { codes: string[] } | { unavailable: true };
++
++/** Make a first set of recovery codes, or a fresh set replacing the old one. */
++export async function makeRecoveryCodes(): Promise<RecoveryCodesResult> {
++  const api = supabase.auth.mfa.recoveryCodes;
++  let res = await api.generate({ friendlyName: "Recovery codes" });
++  if ((res.error as { code?: string } | null)?.code === "mfa_verified_factor_exists") {
++    res = await api.regenerate();
++  }
++  if (res.error) {
++    const code = (res.error as { code?: string }).code ?? "";
++    if (/not_enabled/.test(code)) return { unavailable: true };
++    throw new Error(res.error.message);
++  }
++  return { codes: res.data.codes };
++}
++
++export async function getRecoveryCodesStatus(): Promise<{ total: number; remaining: number } | null> {
++  try {
++    const { data, error } = await supabase.auth.mfa.recoveryCodes.getStatus();
++    if (error || !data) return null;
++    return { total: data.total, remaining: data.remaining };
++  } catch {
++    return null;
++  }
++}
++
++/** Show codes as blocks of four: k4m9-x7qp-2ab8-ht3z. */
++export function formatRecoveryCode(code: string) {
++  return code.match(/.{1,4}/g)?.join("-") ?? code;
++}
++
++function friendlyError(message: string) {
++  if (/invalid totp|invalid code|expired/i.test(message)) {
++    return "That code didn't work. Codes change every 30 seconds, so use the one showing now.";
++  }
++  return message;
++}
++
++/**
++ * The QR code as an image address. The library returns the SVG pasted
++ * straight after "data:image/svg+xml;utf-8,", which breaks on characters
++ * such as "#"; encode it properly.
++ */
++export function qrImageSrc(qr: string) {
++  const prefix = "data:image/svg+xml;utf-8,";
++  const svg = qr.startsWith(prefix) ? qr.slice(prefix.length) : qr.startsWith("<svg") ? qr : null;
++  return svg ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}` : qr;
++}
+diff --git a/src/pages/ForgotPassword.tsx b/src/pages/ForgotPassword.tsx
+new file mode 100644
+index 0000000..d421cc6
+--- /dev/null
++++ b/src/pages/ForgotPassword.tsx
+@@ -0,0 +1,93 @@
++import { useState } from "react";
++import { Link } from "react-router-dom";
++import { toast } from "sonner";
++import { ArrowRight, Loader2, MailCheck } from "lucide-react";
++import { supabase } from "@/config/supabase";
++import { AuthLayout } from "@/components/auth/AuthLayout";
++import { Button } from "@/components/ui/button";
++import { Input } from "@/components/ui/input";
++import { Label } from "@/components/ui/label";
++
++/** /forgot-password — ask for a reset link by email. */
++export default function ForgotPassword() {
++  const [email, setEmail] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [sent, setSent] = useState(false);
++
++  const submit = async (e: React.FormEvent) => {
++    e.preventDefault();
++    setBusy(true);
++    try {
++      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
++        redirectTo: `${window.location.origin}/reset-password`,
++      });
++      // Too many requests is worth saying; anything else, show the same
++      // message either way so nobody can test which emails have accounts.
++      if (error && /rate|too many/i.test(error.message)) throw error;
++      setSent(true);
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't send the email");
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  const footer = (
++    <Link to="/login" className="font-semibold text-primary hover:underline underline-offset-4">
++      Back to sign in
++    </Link>
++  );
++
++  if (sent) {
++    return (
++      <AuthLayout
++        title="Check your email"
++        subtitle={
++          <>
++            If <span className="font-semibold text-ink">{email.trim()}</span> has a Care Africa login, we've sent it a
++            link to choose a new password. The link works once and expires after an hour.
++          </>
++        }
++        footer={footer}
++      >
++        <div className="flex items-start gap-4 rounded-xl border border-border bg-card p-5 shadow-card">
++          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10">
++            <MailCheck className="h-5 w-5 text-primary" />
++          </span>
++          <p className="text-sm leading-relaxed text-muted-foreground">
++            Nothing after a few minutes? Check your spam folder, and that you used your work email address.
++            You'll also need your authenticator app or a recovery code to finish.
++          </p>
++        </div>
++      </AuthLayout>
++    );
++  }
++
++  return (
++    <AuthLayout
++      title="Forgot your password?"
++      subtitle="Enter your work email and we'll send you a link to choose a new one."
++      footer={footer}
++    >
++      <form onSubmit={submit} className="space-y-5">
++        <div className="space-y-2">
++          <Label htmlFor="email">Work email</Label>
++          <Input
++            id="email"
++            type="email"
++            required
++            autoFocus
++            autoComplete="email"
++            placeholder="you@yourpractice.co.za"
++            value={email}
++            onChange={(e) => setEmail(e.target.value)}
++            className="h-11"
++          />
++        </div>
++        <Button type="submit" className="h-11 w-full text-[15px]" disabled={busy}>
++          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <>Send reset link <ArrowRight className="h-4 w-4" /></>}
++        </Button>
++      </form>
++    </AuthLayout>
++  );
++}
+diff --git a/src/pages/Login.tsx b/src/pages/Login.tsx
+index c08bc7c..ecec7dc 100644
+--- a/src/pages/Login.tsx
++++ b/src/pages/Login.tsx
+@@ -29,7 +29,6 @@ export default function Login() {
+ 
+       if (data.user) {
+         await supabase.auth.getSession();
+-        toast.success("Signed in");
+         navigate("/", { replace: true });
+       }
+     } catch (error: any) {
+@@ -69,7 +68,12 @@ export default function Login() {
+         </div>
+ 
+         <div className="space-y-2">
+-          <Label htmlFor="password">Password</Label>
++          <div className="flex items-center justify-between">
++            <Label htmlFor="password">Password</Label>
++            <Link to="/forgot-password" className="text-xs font-semibold text-primary hover:underline underline-offset-4">
++              Forgot password?
++            </Link>
++          </div>
+           <PasswordInput
+             id="password"
+             autoComplete="current-password"
+diff --git a/src/pages/ResetPassword.tsx b/src/pages/ResetPassword.tsx
+new file mode 100644
+index 0000000..53bac2b
+--- /dev/null
++++ b/src/pages/ResetPassword.tsx
+@@ -0,0 +1,138 @@
++import { useEffect, useState } from "react";
++import { Link, useNavigate } from "react-router-dom";
++import { toast } from "sonner";
++import { ArrowRight, Check, Loader2, TriangleAlert } from "lucide-react";
++import { supabase } from "@/config/supabase";
++import { AuthLayout } from "@/components/auth/AuthLayout";
++import { PasswordInput } from "@/components/auth/PasswordInput";
++import { Button } from "@/components/ui/button";
++import { Label } from "@/components/ui/label";
++import { TwoStepChallenge } from "@/pages/TwoStepVerify";
++import { clearTwoStepCache } from "@/lib/twoStep";
++import { usePractice } from "@/context/PracticeContext";
++
++type Stage = "checking" | "invalid" | "challenge" | "password";
++
++/**
++ * /reset-password — opened from the emailed link. If the account has
++ * two-step sign-in, the person must enter an authenticator or recovery code
++ * before choosing a new password, so a stolen inbox isn't enough.
++ */
++export default function ResetPassword() {
++  const navigate = useNavigate();
++  const { refresh } = usePractice();
++  const [stage, setStage] = useState<Stage>("checking");
++  const [password, setPassword] = useState("");
++  const [confirm, setConfirm] = useState("");
++  const [busy, setBusy] = useState(false);
++
++  useEffect(() => {
++    // A failed or expired link comes back with an error in the address.
++    if (/error_code=|error=access_denied/.test(window.location.hash + window.location.search)) {
++      setStage("invalid");
++      return;
++    }
++
++    const decide = async () => {
++      const { data } = await supabase.auth.getSession();
++      if (!data.session) return false;
++      const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
++      setStage(aal?.currentLevel !== "aal2" && aal?.nextLevel === "aal2" ? "challenge" : "password");
++      return true;
++    };
++
++    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
++      if (event === "PASSWORD_RECOVERY" || event === "SIGNED_IN") decide();
++    });
++    // Give the library a moment to read the link, then decide.
++    const timer = setTimeout(async () => {
++      if (!(await decide())) setStage((s) => (s === "checking" ? "invalid" : s));
++    }, 1200);
++    return () => {
++      sub.subscription.unsubscribe();
++      clearTimeout(timer);
++    };
++  }, []);
++
++  const save = async (e: React.FormEvent) => {
++    e.preventDefault();
++    if (password.length < 8) return toast.error("Use at least 8 characters");
++    if (password !== confirm) return toast.error("The two passwords don't match");
++    setBusy(true);
++    try {
++      const { error } = await supabase.auth.updateUser({ password });
++      if (error) throw error;
++      clearTwoStepCache();
++      await refresh();
++      toast.success("Password changed");
++      navigate("/", { replace: true });
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't change your password");
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  if (stage === "checking") {
++    return (
++      <div className="flex min-h-screen items-center justify-center bg-background">
++        <Loader2 className="h-7 w-7 animate-spin text-muted-foreground" />
++      </div>
++    );
++  }
++
++  if (stage === "invalid") {
++    return (
++      <AuthLayout
++        title="This link has expired"
++        subtitle="Reset links work once, for about an hour. Ask for a new one."
++        footer={
++          <Link to="/login" className="font-semibold text-primary hover:underline underline-offset-4">
++            Back to sign in
++          </Link>
++        }
++      >
++        <div className="space-y-4">
++          <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
++            <TriangleAlert className="h-5 w-5 shrink-0" /> Open the newest email if you asked more than once.
++          </div>
++          <Button asChild className="h-11 w-full text-[15px]">
++            <Link to="/forgot-password">Send a new link</Link>
++          </Button>
++        </div>
++      </AuthLayout>
++    );
++  }
++
++  if (stage === "challenge") {
++    return (
++      <AuthLayout
++        title="First, confirm it's you"
++        subtitle="Enter the code from your authenticator app, or one of your recovery codes."
++      >
++        <TwoStepChallenge onDone={() => setStage("password")} />
++      </AuthLayout>
++    );
++  }
++
++  return (
++    <AuthLayout title="Choose a new password" subtitle="Use at least 8 characters. A short sentence is easy to remember and hard to guess.">
++      <form onSubmit={save} className="space-y-5">
++        <div className="space-y-2">
++          <Label htmlFor="password">New password</Label>
++          <PasswordInput id="password" required minLength={8} autoComplete="new-password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} />
++          <p className={`flex items-center gap-1.5 text-xs ${password.length >= 8 ? "text-emerald-600" : "text-muted-foreground"}`}>
++            <Check className={`h-3.5 w-3.5 ${password.length >= 8 ? "opacity-100" : "opacity-40"}`} /> At least 8 characters
++          </p>
++        </div>
++        <div className="space-y-2">
++          <Label htmlFor="confirm">Type it again</Label>
++          <PasswordInput id="confirm" required autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
++        </div>
++        <Button type="submit" className="h-11 w-full text-[15px]" disabled={busy}>
++          {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <>Save new password <ArrowRight className="h-4 w-4" /></>}
++        </Button>
++      </form>
++    </AuthLayout>
++  );
++}
+diff --git a/src/pages/Settings.tsx b/src/pages/Settings.tsx
+index 92d24b2..b345dc2 100644
+--- a/src/pages/Settings.tsx
++++ b/src/pages/Settings.tsx
+@@ -16,6 +16,7 @@ import { AddressAutocomplete } from '@/components/AddressAutocomplete';
+ import { BrandingSettings } from '@/components/Settings/BrandingSettings';
+ import { ModulesSettings } from '@/components/Settings/ModulesSettings';
+ import { TeamSettings } from '@/components/Settings/TeamSettings';
++import { MySecuritySettings } from '@/components/Settings/MySecuritySettings';
+ import { PRACTICE_TYPES, PRACTICE_TYPE_GROUPS } from '@/lib/practiceTypes';
+ import { useModules } from '@/lib/modules';
+ import { usePractice } from '@/context/PracticeContext';
+@@ -146,6 +147,7 @@ export default function Settings() {
+             <TabsTrigger value="general">General</TabsTrigger>
+             <TabsTrigger value="hours">Business Hours</TabsTrigger>
+             <TabsTrigger value="team">Team</TabsTrigger>
++            <TabsTrigger value="security">My security</TabsTrigger>
+             <TabsTrigger value="modules">Modules</TabsTrigger>
+             <TabsTrigger value="services">{showsMedicalAids ? 'Services & Medical Aids' : 'Services'}</TabsTrigger>
+             <TabsTrigger value="rewards">Rewards Program</TabsTrigger>
+@@ -161,6 +163,10 @@ export default function Settings() {
+             />
+           </TabsContent>
+ 
++          <TabsContent value="security">
++            <MySecuritySettings />
++          </TabsContent>
++
+           <TabsContent value="team">
+             <TeamSettings />
+           </TabsContent>
+diff --git a/src/pages/TwoStepSetup.tsx b/src/pages/TwoStepSetup.tsx
+new file mode 100644
+index 0000000..889949f
+--- /dev/null
++++ b/src/pages/TwoStepSetup.tsx
+@@ -0,0 +1,235 @@
++import { useEffect, useRef, useState } from "react";
++import { useLocation, useNavigate } from "react-router-dom";
++import { toast } from "sonner";
++import { ArrowRight, Check, KeyRound, Loader2, ShieldCheck, Smartphone } from "lucide-react";
++import { supabase } from "@/config/supabase";
++import { AuthLayout } from "@/components/auth/AuthLayout";
++import { Button } from "@/components/ui/button";
++import { Label } from "@/components/ui/label";
++import { CodeInput } from "@/components/twostep/CodeInput";
++import { RecoveryCodesPanel } from "@/components/twostep/RecoveryCodesPanel";
++import { usePractice } from "@/context/PracticeContext";
++import { clearTwoStepCache, makeRecoveryCodes, qrImageSrc, verifyAuthenticatorCode } from "@/lib/twoStep";
++import { cn } from "@/lib/utils";
++
++type Step = "intro" | "scan" | "codes";
++
++const STEPS: { id: Step; label: string }[] = [
++  { id: "intro", label: "Get the app" },
++  { id: "scan", label: "Link it" },
++  { id: "codes", label: "Save recovery codes" },
++];
++
++/**
++ * /two-step/setup — everyone at a practice adds an authenticator app the
++ * first time they sign in (or after an admin resets theirs).
++ */
++export default function TwoStepSetup() {
++  const navigate = useNavigate();
++  const location = useLocation();
++  const { refresh } = usePractice();
++  const from = (location.state as { from?: { pathname: string } } | null)?.from?.pathname ?? "/";
++
++  const [step, setStep] = useState<Step>("intro");
++  const [email, setEmail] = useState<string>();
++  const [factor, setFactor] = useState<{ id: string; qr: string; secret: string } | null>(null);
++  const [showSecret, setShowSecret] = useState(false);
++  const [code, setCode] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [codes, setCodes] = useState<string[] | null>(null);
++  const [codesUnavailable, setCodesUnavailable] = useState(false);
++  const [saved, setSaved] = useState(false);
++  const enrolling = useRef(false);
++
++  useEffect(() => {
++    supabase.auth.getUser().then(({ data }) => {
++      if (!data.user) navigate("/login", { replace: true });
++      setEmail(data.user?.email);
++    });
++  }, [navigate]);
++
++  // Start linking: clear any half-finished attempt, then create a new one.
++  const startScan = async () => {
++    setStep("scan");
++    if (factor || enrolling.current) return;
++    enrolling.current = true;
++    try {
++      const { data: list } = await supabase.auth.mfa.listFactors();
++      for (const f of list?.all ?? []) {
++        if (f.factor_type === "totp" && f.status !== "verified") {
++          await supabase.auth.mfa.unenroll({ factorId: f.id });
++        }
++      }
++      const { data, error } = await supabase.auth.mfa.enroll({
++        factorType: "totp",
++        friendlyName: "Authenticator app",
++        issuer: "Care Africa",
++      });
++      if (error) throw error;
++      setFactor({ id: data.id, qr: qrImageSrc(data.totp.qr_code), secret: data.totp.secret });
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't start two-step sign-in");
++      setStep("intro");
++    } finally {
++      enrolling.current = false;
++    }
++  };
++
++  const confirm = async (e: React.FormEvent) => {
++    e.preventDefault();
++    if (code.length !== 6) return;
++    setBusy(true);
++    try {
++      await verifyAuthenticatorCode(code, factor?.id);
++      const result = await makeRecoveryCodes().catch(() => ({ unavailable: true as const }));
++      if ("codes" in result) setCodes(result.codes);
++      else setCodesUnavailable(true);
++      setStep("codes");
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "That code didn't work");
++      setCode("");
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  const finish = async () => {
++    clearTwoStepCache();
++    await refresh();
++    toast.success("Two-step sign-in is on");
++    navigate(from, { replace: true });
++  };
++
++  const stepIndex = STEPS.findIndex((s) => s.id === step);
++
++  return (
++    <AuthLayout
++      title={step === "codes" ? "Save your recovery codes" : "Protect your login"}
++      subtitle={
++        step === "codes"
++          ? "If you ever lose your phone, one of these codes gets you back in. Each works once."
++          : "Care Africa keeps patient information, so every login needs your password and a code from your phone."
++      }
++      footer={
++        <button
++          type="button"
++          onClick={async () => {
++            await supabase.auth.signOut();
++            navigate("/login", { replace: true });
++          }}
++          className="font-medium text-muted-foreground hover:text-ink"
++        >
++          Sign out and do this later
++        </button>
++      }
++    >
++      {/* Progress */}
++      <ol className="mb-8 flex items-center gap-2">
++        {STEPS.map((s, i) => (
++          <li key={s.id} className="flex flex-1 items-center gap-2">
++            <span
++              className={cn(
++                "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold",
++                i < stepIndex ? "bg-emerald-500 text-white" : i === stepIndex ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"
++              )}
++            >
++              {i < stepIndex ? <Check className="h-3.5 w-3.5" /> : i + 1}
++            </span>
++            <span className={cn("hidden text-xs font-medium sm:block", i === stepIndex ? "text-ink" : "text-muted-foreground")}>{s.label}</span>
++            {i < STEPS.length - 1 && <span className="h-px flex-1 bg-border" />}
++          </li>
++        ))}
++      </ol>
++
++      {step === "intro" && (
++        <div className="space-y-6">
++          <div className="flex gap-4 rounded-xl border border-border bg-card p-5 shadow-card">
++            <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10">
++              <Smartphone className="h-5 w-5 text-primary" />
++            </span>
++            <div className="text-sm leading-relaxed">
++              <p className="font-semibold text-ink">Install an authenticator app on your phone</p>
++              <p className="mt-1 text-muted-foreground">
++                Google Authenticator or Microsoft Authenticator both work, and are free from the App Store or Google Play.
++                If you already have one, use it.
++              </p>
++            </div>
++          </div>
++          <Button className="h-11 w-full text-[15px]" onClick={startScan}>
++            I have an authenticator app <ArrowRight className="h-4 w-4" />
++          </Button>
++        </div>
++      )}
++
++      {step === "scan" && (
++        <form onSubmit={confirm} className="space-y-6">
++          <div className="flex items-start gap-5">
++            <div className="flex h-40 w-40 shrink-0 items-center justify-center rounded-xl border border-border bg-white p-2">
++              {factor ? (
++                <img src={factor.qr} alt="QR code to scan with your authenticator app" className="h-full w-full" />
++              ) : (
++                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
++              )}
++            </div>
++            <div className="space-y-2 text-sm leading-relaxed text-muted-foreground">
++              <p>
++                In your authenticator app, tap <span className="font-semibold text-ink">+</span> and scan this code.
++              </p>
++              {factor && (
++                <div>
++                  <button type="button" onClick={() => setShowSecret((v) => !v)} className="text-xs font-semibold text-primary hover:underline">
++                    {showSecret ? "Hide the setup key" : "Can't scan? Type a key instead"}
++                  </button>
++                  {showSecret && (
++                    <p className="mt-1.5 break-all rounded-md bg-muted px-2 py-1.5 font-mono text-xs text-ink">{factor.secret}</p>
++                  )}
++                </div>
++              )}
++            </div>
++          </div>
++
++          <div className="space-y-2">
++            <Label htmlFor="code">Enter the 6-digit code the app shows</Label>
++            <CodeInput value={code} onChange={setCode} />
++          </div>
++
++          <Button type="submit" className="h-11 w-full text-[15px]" disabled={busy || code.length !== 6 || !factor}>
++            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <>Confirm <ArrowRight className="h-4 w-4" /></>}
++          </Button>
++        </form>
++      )}
++
++      {step === "codes" && (
++        <div className="space-y-6">
++          {codes ? (
++            <>
++              <RecoveryCodesPanel codes={codes} email={email} />
++              <p className="flex items-start gap-2 text-xs leading-relaxed text-muted-foreground">
++                <KeyRound className="mt-0.5 h-3.5 w-3.5 shrink-0" />
++                Keep them somewhere safe and private, like a password manager or a printed copy at home. You won't see
++                them again, but you can make new ones in Settings → My security.
++              </p>
++              <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 text-sm">
++                <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} className="h-4 w-4 accent-[hsl(var(--primary))]" />
++                I've saved my recovery codes
++              </label>
++            </>
++          ) : (
++            codesUnavailable && (
++              <div className="flex gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-relaxed text-amber-800">
++                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
++                <p>
++                  Two-step sign-in is on. Recovery codes aren't available yet, so if you lose your phone, ask your
++                  practice admin to reset your two-step sign-in.
++                </p>
++              </div>
++            )
++          )}
++          <Button className="h-11 w-full text-[15px]" disabled={!!codes && !saved} onClick={finish}>
++            Continue to Care Africa <ArrowRight className="h-4 w-4" />
++          </Button>
++        </div>
++      )}
++    </AuthLayout>
++  );
++}
+diff --git a/src/pages/TwoStepVerify.tsx b/src/pages/TwoStepVerify.tsx
+new file mode 100644
+index 0000000..af0b593
+--- /dev/null
++++ b/src/pages/TwoStepVerify.tsx
+@@ -0,0 +1,133 @@
++import { useEffect, useState } from "react";
++import { useLocation, useNavigate } from "react-router-dom";
++import { toast } from "sonner";
++import { ArrowRight, Loader2 } from "lucide-react";
++import { supabase } from "@/config/supabase";
++import { AuthLayout } from "@/components/auth/AuthLayout";
++import { Button } from "@/components/ui/button";
++import { Input } from "@/components/ui/input";
++import { Label } from "@/components/ui/label";
++import { CodeInput } from "@/components/twostep/CodeInput";
++import { usePractice } from "@/context/PracticeContext";
++import { verifyAuthenticatorCode, verifyRecoveryCode } from "@/lib/twoStep";
++
++/**
++ * The second step of signing in. Also used inside the password reset page
++ * (onDone given): an account with 2FA must pass it before changing the
++ * password.
++ */
++export function TwoStepChallenge({ onDone }: { onDone: () => void }) {
++  const [useRecovery, setUseRecovery] = useState(false);
++  const [code, setCode] = useState("");
++  const [recovery, setRecovery] = useState("");
++  const [busy, setBusy] = useState(false);
++
++  const submit = async (e: React.FormEvent) => {
++    e.preventDefault();
++    setBusy(true);
++    try {
++      if (useRecovery) await verifyRecoveryCode(recovery);
++      else await verifyAuthenticatorCode(code);
++      onDone();
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "That code didn't work");
++      setCode("");
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  // Submit as soon as six digits are in.
++  useEffect(() => {
++    if (!useRecovery && code.length === 6 && !busy) {
++      (document.getElementById("two-step-form") as HTMLFormElement | null)?.requestSubmit();
++    }
++  }, [code]);
++
++  return (
++    <form id="two-step-form" onSubmit={submit} className="space-y-5">
++      {useRecovery ? (
++        <div className="space-y-2">
++          <Label htmlFor="recovery">Recovery code</Label>
++          <Input
++            id="recovery"
++            autoFocus
++            autoComplete="off"
++            spellCheck={false}
++            placeholder="xxxx-xxxx-xxxx-xxxx"
++            value={recovery}
++            onChange={(e) => setRecovery(e.target.value)}
++            className="h-12 font-mono text-base tracking-wide"
++          />
++          <p className="text-xs text-muted-foreground">Each recovery code works once.</p>
++        </div>
++      ) : (
++        <div className="space-y-2">
++          <Label htmlFor="code">Code from your authenticator app</Label>
++          <CodeInput value={code} onChange={setCode} />
++        </div>
++      )}
++
++      <Button
++        type="submit"
++        className="h-11 w-full text-[15px]"
++        disabled={busy || (useRecovery ? recovery.trim().length < 8 : code.length !== 6)}
++      >
++        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <>Continue <ArrowRight className="h-4 w-4" /></>}
++      </Button>
++
++      <div className="space-y-2 text-center text-sm">
++        <button
++          type="button"
++          onClick={() => {
++            setUseRecovery((v) => !v);
++            setCode("");
++            setRecovery("");
++          }}
++          className="font-semibold text-primary hover:underline underline-offset-4"
++        >
++          {useRecovery ? "Use my authenticator app instead" : "Lost your phone? Use a recovery code"}
++        </button>
++        {useRecovery && (
++          <p className="text-xs leading-relaxed text-muted-foreground">
++            No recovery codes either? Ask your practice admin to reset your two-step sign-in in Settings → Team.
++          </p>
++        )}
++      </div>
++    </form>
++  );
++}
++
++/** /two-step/verify — after the password, before the app. */
++export default function TwoStepVerify() {
++  const navigate = useNavigate();
++  const location = useLocation();
++  const { refresh } = usePractice();
++  const from = (location.state as { from?: { pathname: string } } | null)?.from?.pathname ?? "/";
++
++  return (
++    <AuthLayout
++      title="Enter your code"
++      subtitle="Open your authenticator app and type the 6-digit code for Care Africa."
++      footer={
++        <button
++          type="button"
++          onClick={async () => {
++            await supabase.auth.signOut();
++            navigate("/login", { replace: true });
++          }}
++          className="font-medium text-muted-foreground hover:text-ink"
++        >
++          Sign in as someone else
++        </button>
++      }
++    >
++      <TwoStepChallenge
++        onDone={async () => {
++          await refresh();
++          navigate(from, { replace: true });
++        }}
++      />
++    </AuthLayout>
++  );
++}
+diff --git a/supabase/demo/seed_demo.sql b/supabase/demo/seed_demo.sql
+index 3afa113..5678a40 100644
+--- a/supabase/demo/seed_demo.sql
++++ b/supabase/demo/seed_demo.sql
+@@ -96,6 +96,7 @@ begin
+     postal_code         = '6070',
+     category            = 'dental',
+     clinical_records    = 'full',        -- needs migration 0006
++    mfa_required        = false,         -- shared demo login: no 2FA (needs migration 0008)
+     brand_primary_color = '#0E7C7B',
+     brand_accent_color  = '#F2A541',
+     specialties         = array['General dentistry','Cosmetic dentistry','Paediatric dentistry'],
+diff --git a/supabase/migrations/0008_two_step_signin.sql b/supabase/migrations/0008_two_step_signin.sql
+new file mode 100644
+index 0000000..24badc5
+--- /dev/null
++++ b/supabase/migrations/0008_two_step_signin.sql
+@@ -0,0 +1,149 @@
++-- =====================================================================
++-- Care Africa — 0008 two-step sign-in (2FA) for everyone
++-- =====================================================================
++-- Decision of 21 Nov 2026: everyone at a practice (admins, practitioners
++-- and front desk) signs in with a password AND a code from an
++-- authenticator app. Recovery codes cover a lost phone; a practice admin
++-- can reset a colleague's 2FA; Care Africa is the last resort.
++--
++-- What this migration does:
++--   1. Practice data is only reachable from a session that completed the
++--      second step (Supabase marks it "aal2" in the login token). The
++--      membership helpers used by every policy now check this, so one
++--      change covers all tables and functions.
++--   2. practices.mfa_required (default true). Care Africa can switch it
++--      off for a practice, e.g. the shared demo login. Practice admins
++--      can't change it.
++--   3. my_mfa_requirement(): tells the app, before the second step,
++--      whether this person must use 2FA.
++--   4. reset_member_two_step(): a practice admin clears a colleague's
++--      authenticator and recovery codes and signs them out everywhere;
++--      they set 2FA up again at their next sign-in.
++--
++-- Run 0006 and 0007 first.
++-- =====================================================================
++
++begin;
++
++alter table practices
++  add column if not exists mfa_required boolean not null default true;
++
++comment on column practices.mfa_required is
++  'Everyone at the practice must use two-step sign-in. Changed by Care Africa only (e.g. off for the demo practice).';
++
++-- Only Care Africa may switch 2FA off (or on) for a practice.
++create or replace function guard_practice_mfa_flag()
++returns trigger language plpgsql as $$
++begin
++  if current_user in ('anon', 'authenticated')
++     and new.mfa_required is distinct from old.mfa_required then
++    raise exception 'Only Care Africa can change whether two-step sign-in is required'
++      using errcode = '42501';
++  end if;
++  return new;
++end $$;
++
++drop trigger if exists practices_guard_mfa_flag on practices;
++create trigger practices_guard_mfa_flag
++  before update of mfa_required on practices
++  for each row execute function guard_practice_mfa_flag();
++
++-- ---------------------------------------------------------------------
++-- Has this session done what the practice requires?
++-- ---------------------------------------------------------------------
++create or replace function auth_mfa_satisfied(target_practice uuid)
++returns boolean language sql stable security definer set search_path = public as $$
++  select coalesce(auth.jwt() ->> 'aal', 'aal1') = 'aal2'
++      or not coalesce((select mfa_required from practices where id = target_practice), true);
++$$;
++revoke execute on function auth_mfa_satisfied(uuid) from public;
++grant  execute on function auth_mfa_satisfied(uuid) to authenticated;
++
++-- The membership helpers behind every policy now also require 2FA.
++create or replace function auth_is_practice_member(target_practice uuid)
++returns boolean language sql stable security definer set search_path = public as $$
++  select exists (
++    select 1 from practice_members
++    where profile_id = auth.uid()
++      and practice_id = target_practice
++      and is_active
++  ) and auth_mfa_satisfied(target_practice);
++$$;
++
++create or replace function auth_is_practice_admin(target_practice uuid)
++returns boolean language sql stable security definer set search_path = public as $$
++  select exists (
++    select 1 from practice_members
++    where profile_id = auth.uid()
++      and practice_id = target_practice
++      and role = 'practice_admin'
++      and is_active
++  ) and auth_mfa_satisfied(target_practice);
++$$;
++
++create or replace function auth_is_clinical_member(target_practice uuid)
++returns boolean language sql stable security definer set search_path = public as $$
++  select exists (
++    select 1 from practice_members
++    where profile_id = auth.uid()
++      and practice_id = target_practice
++      and role in ('doctor', 'practice_admin')
++      and is_active
++  ) and auth_mfa_satisfied(target_practice);
++$$;
++
++create or replace function auth_shares_practice_with(target_profile uuid)
++returns boolean language sql stable security definer set search_path = public as $$
++  select exists (
++    select 1 from practice_members me
++    join practice_members them on them.practice_id = me.practice_id
++    where me.profile_id = auth.uid() and me.is_active
++      and them.profile_id = target_profile and them.is_active
++      and auth_mfa_satisfied(me.practice_id)
++  );
++$$;
++
++-- ---------------------------------------------------------------------
++-- For the app, before the second step: must this person use 2FA?
++-- True if any practice they work at requires it.
++-- ---------------------------------------------------------------------
++create or replace function my_mfa_requirement()
++returns boolean language sql stable security definer set search_path = public as $$
++  select exists (
++    select 1 from practice_members m
++    join practices p on p.id = m.practice_id
++    where m.profile_id = auth.uid() and m.is_active and p.mfa_required
++  );
++$$;
++revoke execute on function my_mfa_requirement() from public;
++grant  execute on function my_mfa_requirement() to authenticated;
++
++-- ---------------------------------------------------------------------
++-- Admin-assisted reset
++-- ---------------------------------------------------------------------
++create or replace function reset_member_two_step(p_member uuid)
++returns void language plpgsql security definer set search_path = public as $$
++declare
++  v_practice uuid;
++  v_profile  uuid;
++begin
++  select practice_id, profile_id into v_practice, v_profile
++    from practice_members where id = p_member and is_active;
++
++  if v_practice is null or not auth_is_practice_admin(v_practice) then
++    raise exception 'Only a practice admin can reset two-step sign-in' using errcode = '42501';
++  end if;
++  if v_profile = auth.uid() then
++    raise exception 'You can''t reset your own two-step sign-in. Use a recovery code, or ask another admin.'
++      using errcode = '42501';
++  end if;
++
++  -- Their authenticator app(s) and recovery codes...
++  delete from auth.mfa_factors where user_id = v_profile;
++  -- ...and every signed-in session, so they start again cleanly.
++  delete from auth.sessions where user_id = v_profile;
++end $$;
++revoke execute on function reset_member_two_step(uuid) from public;
++grant  execute on function reset_member_two_step(uuid) to authenticated;
++
++commit;
+diff --git a/supabase/tests/practice_modules_test.sql b/supabase/tests/practice_modules_test.sql
+index 18fae72..afa42de 100644
+--- a/supabase/tests/practice_modules_test.sql
++++ b/supabase/tests/practice_modules_test.sql
+@@ -22,6 +22,8 @@ create or replace function _try_as(actor uuid, q text)
+ returns text language plpgsql as $$
+ begin
+   perform set_config('request.jwt.claim.sub', actor::text, true);
++  -- Signed in with two-step sign-in completed (migration 0008).
++  perform set_config('request.jwt.claims', json_build_object('sub', actor::text, 'aal', 'aal2')::text, true);
+   perform set_config('role', 'authenticated', true);
+   execute q;
+   perform set_config('role', 'postgres', true);
+@@ -37,6 +39,8 @@ returns text language plpgsql as $$
+ declare out text;
+ begin
+   perform set_config('request.jwt.claim.sub', actor::text, true);
++  -- Signed in with two-step sign-in completed (migration 0008).
++  perform set_config('request.jwt.claims', json_build_object('sub', actor::text, 'aal', 'aal2')::text, true);
+   perform set_config('role', 'authenticated', true);
+   execute q into out;
+   perform set_config('role', 'postgres', true);
+diff --git a/supabase/tests/rls_test.sql b/supabase/tests/rls_test.sql
+index f23468c..0ef7373 100644
+--- a/supabase/tests/rls_test.sql
++++ b/supabase/tests/rls_test.sql
+@@ -33,6 +33,8 @@ returns text language plpgsql as $$
+ declare out text;
+ begin
+   perform set_config('request.jwt.claim.sub', actor::text, true);
++  -- Signed in with two-step sign-in completed (migration 0008).
++  perform set_config('request.jwt.claims', json_build_object('sub', actor::text, 'aal', 'aal2')::text, true);
+   perform set_config('role', 'authenticated', true);
+   execute q into out;
+   perform set_config('role', 'postgres', true);
+diff --git a/supabase/tests/settings_branding_test.sql b/supabase/tests/settings_branding_test.sql
+index 50775bf..86f020b 100644
+--- a/supabase/tests/settings_branding_test.sql
++++ b/supabase/tests/settings_branding_test.sql
+@@ -23,6 +23,8 @@ returns text language plpgsql as $$
+ declare out text;
+ begin
+   perform set_config('request.jwt.claim.sub', actor::text, true);
++  -- Signed in with two-step sign-in completed (migration 0008).
++  perform set_config('request.jwt.claims', json_build_object('sub', actor::text, 'aal', 'aal2')::text, true);
+   perform set_config('role', 'authenticated', true);
+   execute q into out;
+   perform set_config('role', 'postgres', true);
+diff --git a/supabase/tests/staff_invites_test.sql b/supabase/tests/staff_invites_test.sql
+index 6eafe9f..08e7a8e 100644
+--- a/supabase/tests/staff_invites_test.sql
++++ b/supabase/tests/staff_invites_test.sql
+@@ -24,6 +24,8 @@ create or replace function _try_as(actor uuid, q text)
+ returns text language plpgsql as $$
+ begin
+   perform set_config('request.jwt.claim.sub', coalesce(actor::text, ''), true);
++  -- Signed in with two-step sign-in completed (migration 0008).
++  perform set_config('request.jwt.claims', json_build_object('sub', coalesce(actor::text, ''), 'aal', 'aal2')::text, true);
+   perform set_config('role', case when actor is null then 'anon' else 'authenticated' end, true);
+   execute q;
+   perform set_config('role', 'postgres', true);
+@@ -39,6 +41,8 @@ returns text language plpgsql as $$
+ declare out text;
+ begin
+   perform set_config('request.jwt.claim.sub', coalesce(actor::text, ''), true);
++  -- Signed in with two-step sign-in completed (migration 0008).
++  perform set_config('request.jwt.claims', json_build_object('sub', coalesce(actor::text, ''), 'aal', 'aal2')::text, true);
+   perform set_config('role', case when actor is null then 'anon' else 'authenticated' end, true);
+   execute q into out;
+   perform set_config('role', 'postgres', true);
+diff --git a/supabase/tests/two_step_signin_test.sql b/supabase/tests/two_step_signin_test.sql
+new file mode 100644
+index 0000000..4759466
+--- /dev/null
++++ b/supabase/tests/two_step_signin_test.sql
+@@ -0,0 +1,142 @@
++-- =====================================================================
++-- Care Africa — tests for 0008 (two-step sign-in)
++-- =====================================================================
++--   psql "$DATABASE_URL" -f supabase/tests/two_step_signin_test.sql
++-- Seeds data, asserts, then rolls back.
++-- =====================================================================
++
++begin;
++
++grant usage on schema public to authenticated, anon;
++grant all on all tables in schema public to authenticated;
++
++create or replace function _assert(label text, actual text, expected text)
++returns void language plpgsql as $$
++begin
++  if actual is distinct from expected then
++    raise exception 'FAIL  %  got[%] want[%]', label, actual, expected;
++  end if;
++  raise notice 'pass  %', label;
++end $$;
++
++-- Act as a user at a given assurance level: 'aal1' = password only,
++-- 'aal2' = password + authenticator code.
++create or replace function _as(actor uuid, aal text) returns void language plpgsql as $$
++begin
++  perform set_config('request.jwt.claim.sub', actor::text, true);
++  perform set_config('request.jwt.claims', json_build_object('sub', actor, 'aal', aal)::text, true);
++  perform set_config('role', 'authenticated', true);
++end $$;
++
++create or replace function _read(actor uuid, aal text, q text)
++returns text language plpgsql as $$
++declare out text;
++begin
++  perform _as(actor, aal);
++  execute q into out;
++  perform set_config('role', 'postgres', true);
++  return coalesce(out, '');
++exception when others then
++  perform set_config('role', 'postgres', true);
++  return 'ERROR: ' || sqlerrm;
++end $$;
++
++create or replace function _try(actor uuid, aal text, q text)
++returns text language plpgsql as $$
++begin
++  perform _as(actor, aal);
++  execute q;
++  perform set_config('role', 'postgres', true);
++  return 'ok';
++exception when others then
++  perform set_config('role', 'postgres', true);
++  return sqlerrm;
++end $$;
++
++-- a1 owns Seaview; s1 is front desk there. d1 owns the demo practice.
++insert into auth.users (id, email, raw_user_meta_data) values
++  ('00000000-0000-0000-0000-0000000000a1', 'owner@seaview.test', '{"practice_name":"Seaview"}'),
++  ('00000000-0000-0000-0000-0000000000b1', 'desk@seaview.test',  '{"full_name":"Desk"}'),
++  ('00000000-0000-0000-0000-0000000000c1', 'demo@demo.test',     '{"practice_name":"Demo Practice"}');
++
++select set_config('t.p',    (select practice_id::text from practice_members where profile_id = '00000000-0000-0000-0000-0000000000a1'), false);
++select set_config('t.demo', (select practice_id::text from practice_members where profile_id = '00000000-0000-0000-0000-0000000000c1'), false);
++insert into practice_members (practice_id, profile_id, role)
++  values (current_setting('t.p')::uuid, '00000000-0000-0000-0000-0000000000b1', 'staff');
++insert into patients (practice_id, first_name) values (current_setting('t.p')::uuid, 'Thandi');
++insert into patients (practice_id, first_name) values (current_setting('t.demo')::uuid, 'Demo Patient');
++
++-- Care Africa switches 2FA off for the demo practice.
++update practices set mfa_required = false where id = current_setting('t.demo')::uuid;
++
++-- ---------- the second step is required ----------
++select _assert('new practices require two-step sign-in',
++  (select mfa_required::text from practices where id = current_setting('t.p')::uuid), 'true');
++select _assert('password only: no members visible',
++  _read('00000000-0000-0000-0000-0000000000a1', 'aal1', 'select count(*)::text from patients'), '0');
++select _assert('password only: practice details hidden',
++  _read('00000000-0000-0000-0000-0000000000a1', 'aal1', format('select count(*)::text from practices where id = %L', current_setting('t.p'))), '0');
++select _assert('password only: cannot add a member',
++  (_try('00000000-0000-0000-0000-0000000000a1', 'aal1',
++    format('insert into patients (practice_id, first_name) values (%L, %L)', current_setting('t.p'), 'Sneaky')) like '%row-level security%')::text, 'true');
++select _assert('password only: cannot invite staff',
++  _try('00000000-0000-0000-0000-0000000000a1', 'aal1',
++    format('select create_invitation(%L, %L, %L)', current_setting('t.p'), 'x@seaview.test', 'staff')),
++  'Only a practice admin can invite staff');
++select _assert('password only: can still see own membership (to know where to go next)',
++  _read('00000000-0000-0000-0000-0000000000a1', 'aal1', 'select count(*)::text from practice_members where profile_id = auth.uid()'), '1');
++select _assert('app is told 2FA is required',
++  _read('00000000-0000-0000-0000-0000000000a1', 'aal1', 'select my_mfa_requirement()::text'), 'true');
++
++select _assert('with the code: members visible',
++  _read('00000000-0000-0000-0000-0000000000a1', 'aal2', 'select count(*)::text from patients'), '1');
++select _assert('with the code: front desk sees members too',
++  _read('00000000-0000-0000-0000-0000000000b1', 'aal2', 'select count(*)::text from patients'), '1');
++
++-- ---------- demo practice exemption ----------
++select _assert('demo practice: works with password only',
++  _read('00000000-0000-0000-0000-0000000000c1', 'aal1', 'select count(*)::text from patients'), '1');
++select _assert('demo login is told 2FA is not required',
++  _read('00000000-0000-0000-0000-0000000000c1', 'aal1', 'select my_mfa_requirement()::text'), 'false');
++select _assert('a practice admin cannot switch 2FA off',
++  _try('00000000-0000-0000-0000-0000000000a1', 'aal2',
++    format('update practices set mfa_required = false where id = %L', current_setting('t.p'))),
++  'Only Care Africa can change whether two-step sign-in is required');
++
++-- ---------- admin-assisted reset ----------
++insert into auth.mfa_factors (user_id, factor_type, status) values
++  ('00000000-0000-0000-0000-0000000000b1', 'totp', 'verified'),
++  ('00000000-0000-0000-0000-0000000000b1', 'recovery_code', 'verified'),
++  ('00000000-0000-0000-0000-0000000000a1', 'totp', 'verified');
++insert into auth.sessions (user_id, aal) values
++  ('00000000-0000-0000-0000-0000000000b1', 'aal2'),
++  ('00000000-0000-0000-0000-0000000000b1', 'aal1');
++
++select _assert('front desk cannot reset anyone',
++  _try('00000000-0000-0000-0000-0000000000b1', 'aal2',
++    format('select reset_member_two_step(%L)', (select id from practice_members where profile_id = '00000000-0000-0000-0000-0000000000a1'))),
++  'Only a practice admin can reset two-step sign-in');
++select _assert('admin without the second step cannot reset',
++  _try('00000000-0000-0000-0000-0000000000a1', 'aal1',
++    format('select reset_member_two_step(%L)', (select id from practice_members where profile_id = '00000000-0000-0000-0000-0000000000b1'))),
++  'Only a practice admin can reset two-step sign-in');
++select _assert('admin cannot reset their own',
++  _try('00000000-0000-0000-0000-0000000000a1', 'aal2',
++    format('select reset_member_two_step(%L)', (select id from practice_members where profile_id = '00000000-0000-0000-0000-0000000000a1'))),
++  'You can''t reset your own two-step sign-in. Use a recovery code, or ask another admin.');
++select _assert('an admin at another practice cannot reset',
++  _try('00000000-0000-0000-0000-0000000000c1', 'aal2',
++    format('select reset_member_two_step(%L)', (select id from practice_members where profile_id = '00000000-0000-0000-0000-0000000000b1'))),
++  'Only a practice admin can reset two-step sign-in');
++
++select _assert('admin resets front desk',
++  _try('00000000-0000-0000-0000-0000000000a1', 'aal2',
++    format('select reset_member_two_step(%L)', (select id from practice_members where profile_id = '00000000-0000-0000-0000-0000000000b1'))), 'ok');
++select _assert('their authenticator and recovery codes are gone',
++  (select count(*)::text from auth.mfa_factors where user_id = '00000000-0000-0000-0000-0000000000b1'), '0');
++select _assert('they are signed out everywhere',
++  (select count(*)::text from auth.sessions where user_id = '00000000-0000-0000-0000-0000000000b1'), '0');
++select _assert('the admin''s own 2FA is untouched',
++  (select count(*)::text from auth.mfa_factors where user_id = '00000000-0000-0000-0000-0000000000a1'), '1');
++
++rollback;
+diff --git a/supabase/tests/visits_rewards_sales_test.sql b/supabase/tests/visits_rewards_sales_test.sql
+index 6d445c5..32d793b 100644
+--- a/supabase/tests/visits_rewards_sales_test.sql
++++ b/supabase/tests/visits_rewards_sales_test.sql
+@@ -23,6 +23,8 @@ returns text language plpgsql as $$
+ declare out text;
+ begin
+   perform set_config('request.jwt.claim.sub', actor::text, true);
++  -- Signed in with two-step sign-in completed (migration 0008).
++  perform set_config('request.jwt.claims', json_build_object('sub', actor::text, 'aal', 'aal2')::text, true);
+   perform set_config('role', 'authenticated', true);
+   execute q into out;
+   perform set_config('role', 'postgres', true);
+-- 
+2.43.0
+

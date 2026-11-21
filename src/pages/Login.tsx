@@ -29,7 +29,6 @@ export default function Login() {
 
       if (data.user) {
         await supabase.auth.getSession();
-        toast.success("Signed in");
         navigate("/", { replace: true });
       }
     } catch (error: any) {
@@ -69,7 +68,12 @@ export default function Login() {
         </div>
 
         <div className="space-y-2">
-          <Label htmlFor="password">Password</Label>
+          <div className="flex items-center justify-between">
+            <Label htmlFor="password">Password</Label>
+            <Link to="/forgot-password" className="text-xs font-semibold text-primary hover:underline underline-offset-4">
+              Forgot password?
+            </Link>
+          </div>
           <PasswordInput
             id="password"
             autoComplete="current-password"
