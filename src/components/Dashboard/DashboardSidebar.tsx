@@ -14,7 +14,8 @@ import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "@/config/supabase";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { usePractice, type PracticeRole } from "@/context/PracticeContext";
+import { usePractice } from "@/context/PracticeContext";
+import { ROLE_INFO } from "@/lib/roles";
 
 const sections = [
   {
@@ -38,11 +39,6 @@ const sections = [
   },
 ];
 
-const ROLE_LABEL: Record<PracticeRole, string> = {
-  practice_admin: "Practice admin",
-  doctor: "Practitioner",
-  staff: "Staff",
-};
 
 function initials(name: string) {
   return name
@@ -116,7 +112,7 @@ export function DashboardSidebar() {
               </p>
             )}
             <p className="truncate text-xs text-muted-foreground">
-              {practice ? ROLE_LABEL[practice.role] : " "}
+              {practice ? ROLE_INFO[practice.role].label : " "}
             </p>
           </div>
           {practices.length > 1 && (

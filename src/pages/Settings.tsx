@@ -15,6 +15,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { AddressAutocomplete } from '@/components/AddressAutocomplete';
 import { BrandingSettings } from '@/components/Settings/BrandingSettings';
 import { ModulesSettings } from '@/components/Settings/ModulesSettings';
+import { TeamSettings } from '@/components/Settings/TeamSettings';
 import { PRACTICE_TYPES, PRACTICE_TYPE_GROUPS } from '@/lib/practiceTypes';
 import { useModules } from '@/lib/modules';
 import { usePractice } from '@/context/PracticeContext';
@@ -144,6 +145,7 @@ export default function Settings() {
           <TabsList className="bg-white border-b border-gray-200 w-full justify-start space-x-8 px-4">
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="hours">Business Hours</TabsTrigger>
+            <TabsTrigger value="team">Team</TabsTrigger>
             <TabsTrigger value="modules">Modules</TabsTrigger>
             <TabsTrigger value="services">{showsMedicalAids ? 'Services & Medical Aids' : 'Services'}</TabsTrigger>
             <TabsTrigger value="rewards">Rewards Program</TabsTrigger>
@@ -157,6 +159,10 @@ export default function Settings() {
               onSave={(data) => runSave((id) => saveGeneral(id, data), true)}
               saving={saving}
             />
+          </TabsContent>
+
+          <TabsContent value="team">
+            <TeamSettings />
           </TabsContent>
 
           <TabsContent value="modules">

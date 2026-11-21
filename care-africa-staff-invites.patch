@@ -1,0 +1,1587 @@
+From 54628b8c707fff07141493c30f423b6b74d5741d Mon Sep 17 00:00:00 2001
+From: Care Africa <dev@careafrica.local>
+Date: Sat, 21 Nov 2026 09:47:52 +0200
+Subject: [PATCH] Staff invites and roles
+
+- Migration 0007: invitation links (hashed, single use, 7 days), accept only
+  with the invited email, admin-only team changes, a practice always keeps an
+  active admin; clinical tables limited to practitioners and admins
+- Settings > Team: team list, invite by link (copy, WhatsApp, email), change
+  role, remove/restore access, pending invites with new link/cancel, prompt
+  for a second admin
+- /invite/:token page: create login or sign in with the invited email, joins
+  automatically; handles expired, cancelled, used and wrong-account cases
+- Role names: Practice admin, Practitioner, Front desk
+- Tests: 33 new database checks (115 in total)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EwPyWPTXSAWwnbXCzMZAVM
+---
+ src/App.tsx                                   |   2 +
+ src/components/Dashboard/DashboardSidebar.tsx |  10 +-
+ src/components/Settings/TeamSettings.tsx      | 476 ++++++++++++++++++
+ src/lib/db/team.ts                            | 111 ++++
+ src/lib/roles.ts                              |  24 +
+ src/pages/AcceptInvite.tsx                    | 295 +++++++++++
+ src/pages/Settings.tsx                        |   6 +
+ supabase/migrations/0007_staff_invites.sql    | 318 ++++++++++++
+ supabase/tests/staff_invites_test.sql         | 202 ++++++++
+ 9 files changed, 1437 insertions(+), 7 deletions(-)
+ create mode 100644 src/components/Settings/TeamSettings.tsx
+ create mode 100644 src/lib/db/team.ts
+ create mode 100644 src/lib/roles.ts
+ create mode 100644 src/pages/AcceptInvite.tsx
+ create mode 100644 supabase/migrations/0007_staff_invites.sql
+ create mode 100644 supabase/tests/staff_invites_test.sql
+
+diff --git a/src/App.tsx b/src/App.tsx
+index 5b2a967..5688111 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -15,6 +15,7 @@ import Login from "./pages/Login";
+ import ProtectedRoute from "./components/ProtectedRoute";
+ import Inventory from "./pages/Inventory";
+ import Register from "./pages/Register";
++import AcceptInvite from "./pages/AcceptInvite";
+ import AuthCallback from './pages/AuthCallback';
+ import { PracticeProvider, usePractice } from "./context/PracticeContext";
+ import { ConfigProvider } from "antd";
+@@ -62,6 +63,7 @@ const App = () => (
+           <Route path="/onboarding" element={<Onboarding />} />
+           <Route path="/verify-email" element={<VerifyEmail />} />
+           <Route path="/register" element={<Register />} />
++          <Route path="/invite/:token" element={<AcceptInvite />} />
+           {/* Protected routes */}
+           <Route path="/" element={
+             <ProtectedRoute>
+diff --git a/src/components/Dashboard/DashboardSidebar.tsx b/src/components/Dashboard/DashboardSidebar.tsx
+index 38ec3b9..5bdbe3b 100644
+--- a/src/components/Dashboard/DashboardSidebar.tsx
++++ b/src/components/Dashboard/DashboardSidebar.tsx
+@@ -14,7 +14,8 @@ import { useNavigate, useLocation } from "react-router-dom";
+ import { supabase } from "@/config/supabase";
+ import { toast } from "sonner";
+ import { cn } from "@/lib/utils";
+-import { usePractice, type PracticeRole } from "@/context/PracticeContext";
++import { usePractice } from "@/context/PracticeContext";
++import { ROLE_INFO } from "@/lib/roles";
+ 
+ const sections = [
+   {
+@@ -38,11 +39,6 @@ const sections = [
+   },
+ ];
+ 
+-const ROLE_LABEL: Record<PracticeRole, string> = {
+-  practice_admin: "Practice admin",
+-  doctor: "Practitioner",
+-  staff: "Staff",
+-};
+ 
+ function initials(name: string) {
+   return name
+@@ -116,7 +112,7 @@ export function DashboardSidebar() {
+               </p>
+             )}
+             <p className="truncate text-xs text-muted-foreground">
+-              {practice ? ROLE_LABEL[practice.role] : " "}
++              {practice ? ROLE_INFO[practice.role].label : " "}
+             </p>
+           </div>
+           {practices.length > 1 && (
+diff --git a/src/components/Settings/TeamSettings.tsx b/src/components/Settings/TeamSettings.tsx
+new file mode 100644
+index 0000000..c96ae1a
+--- /dev/null
++++ b/src/components/Settings/TeamSettings.tsx
+@@ -0,0 +1,476 @@
++import { useCallback, useEffect, useState } from "react";
++import { toast } from "sonner";
++import { format, formatDistanceToNow } from "date-fns";
++import {
++  Check,
++  Copy,
++  Link2,
++  Mail,
++  MessageCircle,
++  MoreHorizontal,
++  RefreshCw,
++  ShieldCheck,
++  UserPlus,
++  X,
++} from "lucide-react";
++import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
++import { Button } from "@/components/ui/button";
++import { Input } from "@/components/ui/input";
++import { Label } from "@/components/ui/label";
++import {
++  Dialog,
++  DialogContent,
++  DialogDescription,
++  DialogFooter,
++  DialogHeader,
++  DialogTitle,
++} from "@/components/ui/dialog";
++import {
++  DropdownMenu,
++  DropdownMenuContent,
++  DropdownMenuItem,
++  DropdownMenuLabel,
++  DropdownMenuSeparator,
++  DropdownMenuTrigger,
++} from "@/components/ui/dropdown-menu";
++import { usePractice, type PracticeRole } from "@/context/PracticeContext";
++import { ROLE_INFO, ROLE_ORDER } from "@/lib/roles";
++import {
++  createInvitation,
++  listPendingInvitations,
++  listTeam,
++  revokeInvitation,
++  updateTeamMember,
++  type PendingInvitation,
++  type TeamMember,
++} from "@/lib/db/team";
++import { cn } from "@/lib/utils";
++
++function initials(name: string, email: string) {
++  const source = name.trim() || email;
++  return source
++    .split(/[\s@.]+/)
++    .filter(Boolean)
++    .slice(0, 2)
++    .map((w) => w[0]!.toUpperCase())
++    .join("");
++}
++
++const ROLE_PILL: Record<PracticeRole, string> = {
++  practice_admin: "bg-primary/10 text-primary",
++  doctor: "bg-teal-50 text-teal-700",
++  staff: "bg-slate-100 text-slate-700",
++};
++
++function RolePicker({ value, onChange }: { value: PracticeRole; onChange: (r: PracticeRole) => void }) {
++  return (
++    <div role="radiogroup" aria-label="Role" className="grid gap-2">
++      {ROLE_ORDER.map((role) => {
++        const selected = value === role;
++        return (
++          <button
++            key={role}
++            type="button"
++            role="radio"
++            aria-checked={selected}
++            onClick={() => onChange(role)}
++            className={cn(
++              "flex items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition-all",
++              selected ? "border-primary bg-primary/5 ring-4 ring-primary/10" : "border-border hover:bg-muted/40"
++            )}
++          >
++            <span
++              className={cn(
++                "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border-2",
++                selected ? "border-primary" : "border-input"
++              )}
++            >
++              {selected && <span className="h-2 w-2 rounded-full bg-primary" />}
++            </span>
++            <span>
++              <span className="block text-sm font-semibold text-ink">{ROLE_INFO[role].label}</span>
++              <span className="block text-xs text-muted-foreground">{ROLE_INFO[role].description}</span>
++            </span>
++          </button>
++        );
++      })}
++    </div>
++  );
++}
++
++/** The link to send, with one-tap sharing. Shown once, right after inviting. */
++function InviteLinkDialog({
++  invite,
++  practiceName,
++  onClose,
++}: {
++  invite: { email: string; role: PracticeRole; link: string; expiresAt: string } | null;
++  practiceName: string;
++  onClose: () => void;
++}) {
++  const [copied, setCopied] = useState(false);
++  if (!invite) return null;
++
++  const message =
++    `Hi! You've been invited to join ${practiceName} on Care Africa as ${ROLE_INFO[invite.role].label.toLowerCase()}. ` +
++    `Set up your login here (the link works until ${format(new Date(invite.expiresAt), "d MMMM")}): ${invite.link}`;
++
++  const copy = async () => {
++    try {
++      await navigator.clipboard.writeText(invite.link);
++      setCopied(true);
++      setTimeout(() => setCopied(false), 2000);
++    } catch {
++      toast.error("Couldn't copy. Select the link and copy it yourself.");
++    }
++  };
++
++  return (
++    <Dialog open onOpenChange={(open) => !open && onClose()}>
++      <DialogContent className="sm:max-w-lg">
++        <DialogHeader>
++          <DialogTitle>Send this link to {invite.email}</DialogTitle>
++          <DialogDescription>
++            They'll create their own login with this email address. The link works
++            once, until {format(new Date(invite.expiresAt), "d MMMM yyyy")}.
++          </DialogDescription>
++        </DialogHeader>
++
++        <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 p-2">
++          <Link2 className="ml-1 h-4 w-4 shrink-0 text-muted-foreground" />
++          <input
++            readOnly
++            value={invite.link}
++            onFocus={(e) => e.currentTarget.select()}
++            className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none"
++            aria-label="Invitation link"
++          />
++          <Button size="sm" variant="outline" onClick={copy} className="shrink-0 gap-1.5">
++            {copied ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
++            {copied ? "Copied" : "Copy"}
++          </Button>
++        </div>
++
++        <div className="grid grid-cols-2 gap-2">
++          <Button asChild variant="outline" className="gap-2">
++            <a href={`https://wa.me/?text=${encodeURIComponent(message)}`} target="_blank" rel="noreferrer">
++              <MessageCircle className="h-4 w-4" /> WhatsApp
++            </a>
++          </Button>
++          <Button asChild variant="outline" className="gap-2">
++            <a
++              href={`mailto:${invite.email}?subject=${encodeURIComponent(`Join ${practiceName} on Care Africa`)}&body=${encodeURIComponent(message)}`}
++            >
++              <Mail className="h-4 w-4" /> Email
++            </a>
++          </Button>
++        </div>
++
++        <p className="text-xs text-muted-foreground">
++          For safety, Care Africa keeps only a scrambled copy of this link. If it gets lost, send a new one from
++          the team list.
++        </p>
++
++        <DialogFooter>
++          <Button onClick={onClose}>Done</Button>
++        </DialogFooter>
++      </DialogContent>
++    </Dialog>
++  );
++}
++
++/**
++ * Settings → Team. Everyone at the practice gets their own login. Admins
++ * invite people, set their role and remove access when they leave.
++ */
++export function TeamSettings() {
++  const { practice } = usePractice();
++  const isAdmin = practice?.role === "practice_admin";
++  const [members, setMembers] = useState<TeamMember[]>([]);
++  const [invites, setInvites] = useState<PendingInvitation[]>([]);
++  const [myId, setMyId] = useState<string | null>(null);
++  const [loading, setLoading] = useState(true);
++
++  const [inviteOpen, setInviteOpen] = useState(false);
++  const [email, setEmail] = useState("");
++  const [role, setRole] = useState<PracticeRole>("staff");
++  const [sending, setSending] = useState(false);
++  const [newInvite, setNewInvite] = useState<{ email: string; role: PracticeRole; link: string; expiresAt: string } | null>(null);
++
++  const load = useCallback(async () => {
++    if (!practice) return;
++    setLoading(true);
++    try {
++      const [team, pending] = await Promise.all([
++        listTeam(practice.id),
++        isAdmin ? listPendingInvitations(practice.id) : Promise.resolve([]),
++      ]);
++      setMembers(team);
++      setInvites(pending);
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't load your team");
++    } finally {
++      setLoading(false);
++    }
++  }, [practice?.id, isAdmin]);
++
++  useEffect(() => {
++    load();
++    import("@/config/supabase").then(({ supabase }) =>
++      supabase.auth.getUser().then(({ data }) => setMyId(data.user?.id ?? null))
++    );
++  }, [load]);
++
++  if (!practice) return null;
++
++  const invite = async (inviteEmail: string, inviteRole: PracticeRole) => {
++    setSending(true);
++    try {
++      const { link, expiresAt } = await createInvitation(practice.id, inviteEmail, inviteRole);
++      setNewInvite({ email: inviteEmail.trim().toLowerCase(), role: inviteRole, link, expiresAt });
++      setInviteOpen(false);
++      setEmail("");
++      setRole("staff");
++      load();
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't create the invitation");
++    } finally {
++      setSending(false);
++    }
++  };
++
++  const change = async (m: TeamMember, nextRole: PracticeRole, active: boolean, success: string) => {
++    try {
++      await updateTeamMember(m.id, nextRole, active);
++      toast.success(success);
++      load();
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't update the team");
++    }
++  };
++
++  const active = members.filter((m) => m.isActive);
++  const removed = members.filter((m) => !m.isActive);
++  const adminCount = active.filter((m) => m.role === "practice_admin").length;
++
++  return (
++    <div className="space-y-6">
++      <Card>
++        <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-4 space-y-0">
++          <div>
++            <CardTitle className="text-lg">Your team</CardTitle>
++            <CardDescription className="mt-1">
++              Everyone gets their own login, so you always know who did what. Never share a password.
++            </CardDescription>
++          </div>
++          {isAdmin && (
++            <Button className="gap-2" onClick={() => setInviteOpen(true)}>
++              <UserPlus className="h-4 w-4" /> Invite someone
++            </Button>
++          )}
++        </CardHeader>
++        <CardContent className="p-0">
++          {isAdmin && adminCount < 2 && !loading && (
++            <div className="mx-6 mb-4 flex items-start gap-2.5 rounded-lg bg-amber-50 px-3 py-2.5 text-xs leading-relaxed text-amber-800">
++              <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0" />
++              <span>
++                <strong>Add a second admin.</strong> If the only admin is ever locked out, another admin can let them
++                back in, without waiting for Care Africa support.
++              </span>
++            </div>
++          )}
++
++          {loading ? (
++            <div className="space-y-2 px-6 pb-6">
++              {[0, 1, 2].map((i) => (
++                <div key={i} className="h-14 animate-pulse rounded-lg bg-muted" />
++              ))}
++            </div>
++          ) : (
++            <ul className="divide-y divide-border border-t border-border">
++              {active.map((m) => {
++                const isMe = m.profileId === myId;
++                return (
++                  <li key={m.id} className="flex items-center gap-4 px-6 py-3.5">
++                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-bold text-ink">
++                      {initials(m.name, m.email)}
++                    </span>
++                    <div className="min-w-0 flex-1">
++                      <p className="truncate text-sm font-semibold text-ink">
++                        {m.name || m.email}
++                        {isMe && <span className="ml-2 text-xs font-medium text-muted-foreground">(you)</span>}
++                      </p>
++                      <p className="truncate text-xs text-muted-foreground">
++                        {m.name ? `${m.email} · ` : ""}joined {format(new Date(m.joinedAt), "d MMM yyyy")}
++                      </p>
++                    </div>
++                    <span className={cn("shrink-0 rounded-full px-2.5 py-1 text-xs font-semibold", ROLE_PILL[m.role])}>
++                      {ROLE_INFO[m.role].label}
++                    </span>
++                    {isAdmin ? (
++                      <DropdownMenu>
++                        <DropdownMenuTrigger asChild>
++                          <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Change ${m.name || m.email}`}>
++                            <MoreHorizontal className="h-4 w-4" />
++                          </Button>
++                        </DropdownMenuTrigger>
++                        <DropdownMenuContent align="end" className="w-56">
++                          <DropdownMenuLabel>Change role</DropdownMenuLabel>
++                          {ROLE_ORDER.map((r) => (
++                            <DropdownMenuItem
++                              key={r}
++                              disabled={r === m.role}
++                              onClick={() => change(m, r, true, `${m.name || m.email} is now ${ROLE_INFO[r].label.toLowerCase()}`)}
++                            >
++                              {r === m.role ? <Check className="mr-2 h-4 w-4" /> : <span className="mr-2 w-4" />}
++                              {ROLE_INFO[r].label}
++                            </DropdownMenuItem>
++                          ))}
++                          <DropdownMenuSeparator />
++                          <DropdownMenuItem
++                            className="text-red-600 focus:text-red-600"
++                            onClick={() => {
++                              if (window.confirm(`Remove ${m.name || m.email}'s access to ${practice.name}? Their past work stays on record.`)) {
++                                change(m, m.role, false, `${m.name || m.email} no longer has access`);
++                              }
++                            }}
++                          >
++                            <X className="mr-2 h-4 w-4" /> Remove access
++                          </DropdownMenuItem>
++                        </DropdownMenuContent>
++                      </DropdownMenu>
++                    ) : (
++                      <span className="w-8" />
++                    )}
++                  </li>
++                );
++              })}
++            </ul>
++          )}
++        </CardContent>
++      </Card>
++
++      {isAdmin && invites.length > 0 && (
++        <Card>
++          <CardHeader>
++            <CardTitle className="text-lg">Waiting to join</CardTitle>
++            <CardDescription>Invitations that haven't been used yet.</CardDescription>
++          </CardHeader>
++          <CardContent className="p-0">
++            <ul className="divide-y divide-border border-t border-border">
++              {invites.map((i) => {
++                const expired = new Date(i.expiresAt) < new Date();
++                return (
++                  <li key={i.id} className="flex flex-wrap items-center gap-4 px-6 py-3.5">
++                    <div className="min-w-0 flex-1">
++                      <p className="truncate text-sm font-semibold text-ink">{i.email}</p>
++                      <p className={cn("text-xs", expired ? "text-red-600" : "text-muted-foreground")}>
++                        {ROLE_INFO[i.role].label} ·{" "}
++                        {expired
++                          ? "link expired"
++                          : `link expires ${formatDistanceToNow(new Date(i.expiresAt), { addSuffix: true })}`}
++                      </p>
++                    </div>
++                    <Button size="sm" variant="outline" className="gap-1.5" disabled={sending} onClick={() => invite(i.email, i.role)}>
++                      <RefreshCw className="h-3.5 w-3.5" /> New link
++                    </Button>
++                    <Button
++                      size="sm"
++                      variant="ghost"
++                      className="text-red-600 hover:text-red-700"
++                      onClick={async () => {
++                        try {
++                          await revokeInvitation(i.id);
++                          toast.success("Invitation cancelled");
++                          load();
++                        } catch (error) {
++                          toast.error(error instanceof Error ? error.message : "Couldn't cancel");
++                        }
++                      }}
++                    >
++                      Cancel
++                    </Button>
++                  </li>
++                );
++              })}
++            </ul>
++          </CardContent>
++        </Card>
++      )}
++
++      {isAdmin && removed.length > 0 && (
++        <Card>
++          <CardHeader>
++            <CardTitle className="text-lg">Former team members</CardTitle>
++            <CardDescription>They can't sign in to this practice. Their past work stays on record.</CardDescription>
++          </CardHeader>
++          <CardContent className="p-0">
++            <ul className="divide-y divide-border border-t border-border">
++              {removed.map((m) => (
++                <li key={m.id} className="flex items-center gap-4 px-6 py-3">
++                  <div className="min-w-0 flex-1">
++                    <p className="truncate text-sm text-muted-foreground">{m.name || m.email}</p>
++                  </div>
++                  <Button
++                    size="sm"
++                    variant="outline"
++                    onClick={() => change(m, m.role, true, `${m.name || m.email} has access again`)}
++                  >
++                    Restore access
++                  </Button>
++                </li>
++              ))}
++            </ul>
++          </CardContent>
++        </Card>
++      )}
++
++      {!isAdmin && <p className="text-right text-sm text-muted-foreground">Only a practice admin can change the team.</p>}
++
++      {/* Invite form */}
++      <Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
++        <DialogContent className="sm:max-w-md">
++          <DialogHeader>
++            <DialogTitle>Invite someone to {practice.name}</DialogTitle>
++            <DialogDescription>You'll get a link to send them by WhatsApp or email.</DialogDescription>
++          </DialogHeader>
++          <form
++            className="space-y-4"
++            onSubmit={(e) => {
++              e.preventDefault();
++              invite(email, role);
++            }}
++          >
++            <div className="space-y-2">
++              <Label htmlFor="invite-email">Their email address</Label>
++              <Input
++                id="invite-email"
++                type="email"
++                required
++                autoComplete="off"
++                placeholder="name@yourpractice.co.za"
++                value={email}
++                onChange={(e) => setEmail(e.target.value)}
++              />
++              <p className="text-xs text-muted-foreground">They must sign in with this address.</p>
++            </div>
++            <div className="space-y-2">
++              <Label>Role</Label>
++              <RolePicker value={role} onChange={setRole} />
++            </div>
++            <DialogFooter>
++              <Button type="button" variant="ghost" onClick={() => setInviteOpen(false)}>
++                Cancel
++              </Button>
++              <Button type="submit" disabled={sending}>
++                {sending ? "Creating link…" : "Create invitation link"}
++              </Button>
++            </DialogFooter>
++          </form>
++        </DialogContent>
++      </Dialog>
++
++      <InviteLinkDialog invite={newInvite} practiceName={practice.name} onClose={() => setNewInvite(null)} />
++    </div>
++  );
++}
+diff --git a/src/lib/db/team.ts b/src/lib/db/team.ts
+new file mode 100644
+index 0000000..9cf4675
+--- /dev/null
++++ b/src/lib/db/team.ts
+@@ -0,0 +1,111 @@
++import { supabase } from "@/config/supabase";
++import type { PracticeRole } from "@/context/PracticeContext";
++
++export interface TeamMember {
++  id: string;
++  role: PracticeRole;
++  isActive: boolean;
++  joinedAt: string;
++  profileId: string;
++  name: string;
++  email: string;
++}
++
++export interface PendingInvitation {
++  id: string;
++  email: string;
++  role: PracticeRole;
++  createdAt: string;
++  expiresAt: string;
++}
++
++export interface InvitationPreview {
++  status: "pending" | "expired" | "accepted" | "revoked" | "invalid";
++  practice_name?: string;
++  role?: PracticeRole;
++  email?: string;
++  expires_at?: string;
++}
++
++function fail(error: { message: string } | null) {
++  if (error) throw new Error(error.message);
++}
++
++export async function listTeam(practiceId: string): Promise<TeamMember[]> {
++  const { data, error } = await supabase
++    .from("practice_members")
++    .select("id, role, is_active, created_at, profile:profiles(id, full_name, email)")
++    .eq("practice_id", practiceId)
++    .order("created_at", { ascending: true });
++  fail(error);
++  type Row = { id: string; role: PracticeRole; is_active: boolean; created_at: string; profile: { id: string; full_name: string | null; email: string | null } | null };
++  return ((data ?? []) as unknown as Row[]).map((m) => ({
++    id: m.id,
++    role: m.role,
++    isActive: m.is_active,
++    joinedAt: m.created_at,
++    profileId: m.profile?.id ?? "",
++    name: m.profile?.full_name || "",
++    email: m.profile?.email || "",
++  }));
++}
++
++export async function listPendingInvitations(practiceId: string): Promise<PendingInvitation[]> {
++  const { data, error } = await supabase
++    .from("practice_invitations")
++    .select("id, email, role, created_at, expires_at")
++    .eq("practice_id", practiceId)
++    .is("accepted_at", null)
++    .is("revoked_at", null)
++    .order("created_at", { ascending: false });
++  fail(error);
++  type Row = { id: string; email: string; role: PracticeRole; created_at: string; expires_at: string };
++  return ((data ?? []) as Row[]).map((i) => ({
++    id: i.id,
++    email: i.email,
++    role: i.role,
++    createdAt: i.created_at,
++    expiresAt: i.expires_at,
++  }));
++}
++
++/** Creates an invitation and returns the link to send. The link is only available now. */
++export async function createInvitation(practiceId: string, email: string, role: PracticeRole) {
++  const { data, error } = await supabase.rpc("create_invitation", {
++    p_practice: practiceId,
++    p_email: email,
++    p_role: role,
++  });
++  fail(error);
++  const row = Array.isArray(data) ? data[0] : data;
++  return {
++    link: `${window.location.origin}/invite/${row.token}`,
++    expiresAt: row.expires_at as string,
++  };
++}
++
++export async function revokeInvitation(invitationId: string) {
++  const { error } = await supabase.rpc("revoke_invitation", { p_invitation: invitationId });
++  fail(error);
++}
++
++export async function updateTeamMember(memberId: string, role: PracticeRole, isActive: boolean) {
++  const { error } = await supabase.rpc("update_team_member", {
++    p_member: memberId,
++    p_role: role,
++    p_active: isActive,
++  });
++  fail(error);
++}
++
++export async function getInvitation(token: string): Promise<InvitationPreview> {
++  const { data, error } = await supabase.rpc("get_invitation", { p_token: token });
++  fail(error);
++  return (data ?? { status: "invalid" }) as InvitationPreview;
++}
++
++export async function acceptInvitation(token: string): Promise<string> {
++  const { data, error } = await supabase.rpc("accept_invitation", { p_token: token });
++  fail(error);
++  return data as string;
++}
+diff --git a/src/lib/roles.ts b/src/lib/roles.ts
+new file mode 100644
+index 0000000..61587b4
+--- /dev/null
++++ b/src/lib/roles.ts
+@@ -0,0 +1,24 @@
++import type { PracticeRole } from "@/context/PracticeContext";
++
++/** How each practice role is named and explained in the app. */
++export const ROLE_INFO: Record<PracticeRole, { label: string; description: string }> = {
++  practice_admin: {
++    label: "Practice admin",
++    description: "Everything, including settings, branding, modules and the team.",
++  },
++  doctor: {
++    label: "Practitioner",
++    description: "Appointments, members and clinical records.",
++  },
++  staff: {
++    label: "Front desk",
++    description: "Bookings, check-in, members and sales. No clinical records.",
++  },
++};
++
++export const ROLE_ORDER: PracticeRole[] = ["staff", "doctor", "practice_admin"];
++
++/** Practitioners and admins can open clinical records; front desk can't. */
++export function canSeeClinical(role: PracticeRole | null | undefined): boolean {
++  return role === "doctor" || role === "practice_admin";
++}
+diff --git a/src/pages/AcceptInvite.tsx b/src/pages/AcceptInvite.tsx
+new file mode 100644
+index 0000000..7a81e26
+--- /dev/null
++++ b/src/pages/AcceptInvite.tsx
+@@ -0,0 +1,295 @@
++import { useEffect, useRef, useState } from "react";
++import { Link, useNavigate, useParams } from "react-router-dom";
++import { toast } from "sonner";
++import { ArrowRight, Check, Loader2, MailCheck, TriangleAlert } from "lucide-react";
++import type { Session } from "@supabase/supabase-js";
++import { supabase } from "@/config/supabase";
++import { AuthLayout } from "@/components/auth/AuthLayout";
++import { PasswordInput } from "@/components/auth/PasswordInput";
++import { Button } from "@/components/ui/button";
++import { Input } from "@/components/ui/input";
++import { Label } from "@/components/ui/label";
++import { usePractice } from "@/context/PracticeContext";
++import { ROLE_INFO } from "@/lib/roles";
++import { acceptInvitation, getInvitation, type InvitationPreview } from "@/lib/db/team";
++
++type Mode = "create" | "signin";
++
++const DEAD_LINK: Record<string, { title: string; body: string }> = {
++  invalid: { title: "This link isn't valid", body: "Check that you opened the whole link, or ask your practice admin to send a new one." },
++  expired: { title: "This invitation has expired", body: "Invitation links work for 7 days. Ask your practice admin to send a new one." },
++  revoked: { title: "This invitation was cancelled", body: "Ask your practice admin if you should have access." },
++  accepted: { title: "This invitation has already been used", body: "If it was you, sign in with your email address and password." },
++};
++
++/**
++ * /invite/:token — someone joins a practice from the link their practice
++ * admin sent them. They create a login (or sign in) with the invited email
++ * address, then join automatically.
++ */
++export default function AcceptInvite() {
++  const { token = "" } = useParams();
++  const navigate = useNavigate();
++  const { refresh } = usePractice();
++
++  const [invite, setInvite] = useState<InvitationPreview | null>(null);
++  const [session, setSession] = useState<Session | null | undefined>(undefined);
++  const [mode, setMode] = useState<Mode>("create");
++  const [fullName, setFullName] = useState("");
++  const [password, setPassword] = useState("");
++  const [busy, setBusy] = useState(false);
++  const [checkEmail, setCheckEmail] = useState(false);
++  const [joinError, setJoinError] = useState<string | null>(null);
++  const joining = useRef(false);
++
++  useEffect(() => {
++    getInvitation(token)
++      .then(setInvite)
++      .catch(() => setInvite({ status: "invalid" }));
++    supabase.auth.getSession().then(({ data }) => setSession(data.session));
++    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
++    return () => sub.subscription.unsubscribe();
++  }, [token]);
++
++  const roleLabel = invite?.role ? ROLE_INFO[invite.role].label.toLowerCase() : "";
++  const signedInEmail = session?.user.email?.toLowerCase();
++  const rightAccount = !!session && !!invite?.email && signedInEmail === invite.email.toLowerCase();
++
++  // Signed in with the invited address: join straight away.
++  useEffect(() => {
++    if (invite?.status !== "pending" || !rightAccount || joining.current) return;
++    joining.current = true;
++    acceptInvitation(token)
++      .then(async () => {
++        await refresh();
++        toast.success(`Welcome to ${invite.practice_name}`);
++        navigate("/", { replace: true });
++      })
++      .catch((error) => {
++        joining.current = false;
++        setJoinError(error instanceof Error ? error.message : "Couldn't join the practice");
++      });
++  }, [invite?.status, rightAccount, token]);
++
++  const createAccount = async (e: React.FormEvent) => {
++    e.preventDefault();
++    if (!invite?.email) return;
++    setBusy(true);
++    try {
++      const { data, error } = await supabase.auth.signUp({
++        email: invite.email,
++        password,
++        options: {
++          data: { full_name: fullName.trim() },
++          emailRedirectTo: `${window.location.origin}/invite/${token}`,
++        },
++      });
++      if (error) {
++        if (/already registered|already exists/i.test(error.message)) {
++          setMode("signin");
++          toast.message("You already have a Care Africa login. Sign in to join.");
++          return;
++        }
++        throw error;
++      }
++      // With email confirmation on, there's no session until they click the
++      // link in their inbox, which brings them back to this page.
++      if (!data.session) setCheckEmail(true);
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't create your login");
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  const signIn = async (e: React.FormEvent) => {
++    e.preventDefault();
++    if (!invite?.email) return;
++    setBusy(true);
++    try {
++      const { error } = await supabase.auth.signInWithPassword({ email: invite.email, password });
++      if (error) throw error;
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't sign in");
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  // ---------- states ----------
++
++  if (!invite || session === undefined) {
++    return (
++      <div className="flex min-h-screen items-center justify-center bg-background">
++        <Loader2 className="h-7 w-7 animate-spin text-muted-foreground" />
++      </div>
++    );
++  }
++
++  if (invite.status !== "pending") {
++    const copy = DEAD_LINK[invite.status] ?? DEAD_LINK.invalid;
++    return (
++      <AuthLayout
++        title={copy.title}
++        subtitle={copy.body}
++        footer={
++          <Link to="/login" className="font-semibold text-primary hover:underline underline-offset-4">
++            Go to sign in
++          </Link>
++        }
++      >
++        <div className="flex items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
++          <TriangleAlert className="h-5 w-5 shrink-0" />
++          {invite.practice_name ? `Invitation to ${invite.practice_name}` : "Invitation link"}
++        </div>
++      </AuthLayout>
++    );
++  }
++
++  const title = `Join ${invite.practice_name}`;
++  const subtitle = (
++    <>
++      You've been invited as <span className="font-semibold text-ink">{roleLabel}</span>.{" "}
++      {invite.role && ROLE_INFO[invite.role].description}
++    </>
++  );
++
++  if (session && !rightAccount) {
++    return (
++      <AuthLayout title={title} subtitle={subtitle}>
++        <div className="space-y-4 rounded-xl border border-border bg-card p-5 text-sm shadow-card">
++          <p>
++            You're signed in as <strong>{session.user.email}</strong>, but this invitation is for{" "}
++            <strong>{invite.email}</strong>.
++          </p>
++          <Button
++            variant="outline"
++            className="w-full"
++            onClick={async () => {
++              await supabase.auth.signOut();
++              setMode("signin");
++            }}
++          >
++            Sign out and continue as {invite.email}
++          </Button>
++        </div>
++      </AuthLayout>
++    );
++  }
++
++  if (session && rightAccount) {
++    return (
++      <AuthLayout title={title} subtitle={subtitle}>
++        {joinError ? (
++          <div className="space-y-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
++            <p>{joinError}</p>
++            <Button variant="outline" onClick={() => { setJoinError(null); joining.current = false; setSession({ ...session }); }}>
++              Try again
++            </Button>
++          </div>
++        ) : (
++          <div className="flex items-center gap-3 text-sm text-muted-foreground">
++            <Loader2 className="h-5 w-5 animate-spin" /> Adding you to {invite.practice_name}…
++          </div>
++        )}
++      </AuthLayout>
++    );
++  }
++
++  if (checkEmail) {
++    return (
++      <AuthLayout
++        title="Check your email"
++        subtitle={
++          <>
++            We sent a confirmation link to <span className="font-semibold text-ink">{invite.email}</span>. Open it
++            on this device and you'll join {invite.practice_name} straight away.
++          </>
++        }
++      >
++        <div className="flex items-start gap-4 rounded-xl border border-border bg-card p-5 shadow-card">
++          <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10">
++            <MailCheck className="h-5 w-5 text-primary" />
++          </span>
++          <p className="text-sm leading-relaxed text-muted-foreground">
++            It can take a minute to arrive. Check your spam folder too.
++          </p>
++        </div>
++      </AuthLayout>
++    );
++  }
++
++  return (
++    <AuthLayout
++      title={title}
++      subtitle={subtitle}
++      footer={
++        mode === "create" ? (
++          <>
++            Already have a Care Africa login?{" "}
++            <button type="button" onClick={() => setMode("signin")} className="font-semibold text-primary hover:underline underline-offset-4">
++              Sign in instead
++            </button>
++          </>
++        ) : (
++          <>
++            New to Care Africa?{" "}
++            <button type="button" onClick={() => setMode("create")} className="font-semibold text-primary hover:underline underline-offset-4">
++              Create your login
++            </button>
++          </>
++        )
++      }
++    >
++      <form onSubmit={mode === "create" ? createAccount : signIn} className="space-y-5">
++        <div className="space-y-2">
++          <Label htmlFor="email">Email</Label>
++          <Input id="email" value={invite.email} readOnly disabled className="h-11" />
++        </div>
++
++        {mode === "create" && (
++          <div className="space-y-2">
++            <Label htmlFor="name">Your full name</Label>
++            <Input
++              id="name"
++              required
++              autoComplete="name"
++              placeholder="As your colleagues know you"
++              value={fullName}
++              onChange={(e) => setFullName(e.target.value)}
++              className="h-11"
++            />
++          </div>
++        )}
++
++        <div className="space-y-2">
++          <Label htmlFor="password">{mode === "create" ? "Choose a password" : "Password"}</Label>
++          <PasswordInput
++            id="password"
++            required
++            minLength={mode === "create" ? 8 : undefined}
++            autoComplete={mode === "create" ? "new-password" : "current-password"}
++            value={password}
++            onChange={(e) => setPassword(e.target.value)}
++          />
++          {mode === "create" && (
++            <p className={`flex items-center gap-1.5 text-xs ${password.length >= 8 ? "text-emerald-600" : "text-muted-foreground"}`}>
++              <Check className={`h-3.5 w-3.5 ${password.length >= 8 ? "opacity-100" : "opacity-40"}`} />
++              At least 8 characters
++            </p>
++          )}
++        </div>
++
++        <Button type="submit" className="h-11 w-full text-[15px]" disabled={busy}>
++          {busy ? (
++            <Loader2 className="h-4 w-4 animate-spin" />
++          ) : (
++            <>
++              {mode === "create" ? "Create login and join" : "Sign in and join"} <ArrowRight className="h-4 w-4" />
++            </>
++          )}
++        </Button>
++      </form>
++    </AuthLayout>
++  );
++}
+diff --git a/src/pages/Settings.tsx b/src/pages/Settings.tsx
+index cf3e325..92d24b2 100644
+--- a/src/pages/Settings.tsx
++++ b/src/pages/Settings.tsx
+@@ -15,6 +15,7 @@ import { Checkbox } from '@/components/ui/checkbox';
+ import { AddressAutocomplete } from '@/components/AddressAutocomplete';
+ import { BrandingSettings } from '@/components/Settings/BrandingSettings';
+ import { ModulesSettings } from '@/components/Settings/ModulesSettings';
++import { TeamSettings } from '@/components/Settings/TeamSettings';
+ import { PRACTICE_TYPES, PRACTICE_TYPE_GROUPS } from '@/lib/practiceTypes';
+ import { useModules } from '@/lib/modules';
+ import { usePractice } from '@/context/PracticeContext';
+@@ -144,6 +145,7 @@ export default function Settings() {
+           <TabsList className="bg-white border-b border-gray-200 w-full justify-start space-x-8 px-4">
+             <TabsTrigger value="general">General</TabsTrigger>
+             <TabsTrigger value="hours">Business Hours</TabsTrigger>
++            <TabsTrigger value="team">Team</TabsTrigger>
+             <TabsTrigger value="modules">Modules</TabsTrigger>
+             <TabsTrigger value="services">{showsMedicalAids ? 'Services & Medical Aids' : 'Services'}</TabsTrigger>
+             <TabsTrigger value="rewards">Rewards Program</TabsTrigger>
+@@ -159,6 +161,10 @@ export default function Settings() {
+             />
+           </TabsContent>
+ 
++          <TabsContent value="team">
++            <TeamSettings />
++          </TabsContent>
++
+           <TabsContent value="modules">
+             <ModulesSettings />
+           </TabsContent>
+diff --git a/supabase/migrations/0007_staff_invites.sql b/supabase/migrations/0007_staff_invites.sql
+new file mode 100644
+index 0000000..caf9985
+--- /dev/null
++++ b/supabase/migrations/0007_staff_invites.sql
+@@ -0,0 +1,318 @@
++-- =====================================================================
++-- Care Africa — 0007 staff invites and roles
++-- =====================================================================
++-- Every person at a practice gets their own login (no shared passwords),
++-- so the practice can control and later audit who did what.
++--
++-- Roles (practice_members.role):
++--   practice_admin  "Practice admin"  everything, incl. settings and staff
++--   doctor          "Practitioner"    appointments and clinical records
++--   staff           "Front desk"      bookings, check-in, members, sales;
++--                                     NO clinical records
++--
++-- Invites: a practice admin creates an invitation for an email address
++-- and role. The app shows a one-time link the admin can send by WhatsApp
++-- or email. The person opens it, creates an account (or signs in) with
++-- that same email address, and joins the practice. Only a hash of the
++-- link's secret is stored. Links expire after 7 days.
++--
++-- Safety rules enforced here:
++--   * Only practice admins can invite, change roles or remove staff.
++--   * A practice can never be left without an active admin.
++--   * An invitation can only be accepted by a login with the invited
++--     email address.
++--   * Clinical tables (consultations, conditions, medications, visits,
++--     documents, prescriptions) are now limited to practitioners and
++--     admins. Front desk keeps bookings, members, sales and claims.
++-- =====================================================================
++
++begin;
++
++-- ---------------------------------------------------------------------
++-- Clinical access: practitioners and admins only
++-- ---------------------------------------------------------------------
++create or replace function auth_is_clinical_member(target_practice uuid)
++returns boolean language sql stable security definer set search_path = public as $$
++  select exists (
++    select 1 from practice_members
++    where profile_id = auth.uid()
++      and practice_id = target_practice
++      and role in ('doctor', 'practice_admin')
++      and is_active
++  );
++$$;
++revoke execute on function auth_is_clinical_member(uuid) from public;
++grant  execute on function auth_is_clinical_member(uuid) to authenticated;
++
++do $$
++declare t text;
++begin
++  foreach t in array array[
++    'consultations', 'patient_medications', 'patient_conditions',
++    'patient_visits', 'patient_documents'
++  ] loop
++    execute format($f$
++      drop policy if exists %1$s_staff_all on %1$s;
++      drop policy if exists %1$s_clinical_all on %1$s;
++      create policy %1$s_clinical_all on %1$s
++        for all using (auth_is_clinical_member(practice_id))
++        with check (auth_is_clinical_member(practice_id));
++    $f$, t);
++  end loop;
++end $$;
++
++drop policy if exists prescriptions_read on prescriptions;
++drop policy if exists prescriptions_staff_write on prescriptions;
++drop policy if exists prescriptions_clinical_write on prescriptions;
++
++create policy prescriptions_read on prescriptions
++  for select using (
++    exists (select 1 from consultations c
++            where c.id = prescriptions.consultation_id
++              and (auth_owns_patient(c.patient_id) or auth_is_clinical_member(c.practice_id)))
++  );
++
++create policy prescriptions_clinical_write on prescriptions
++  for all using (
++    exists (select 1 from consultations c
++            where c.id = prescriptions.consultation_id
++              and auth_is_clinical_member(c.practice_id))
++  )
++  with check (
++    exists (select 1 from consultations c
++            where c.id = prescriptions.consultation_id
++              and auth_is_clinical_member(c.practice_id))
++  );
++
++-- ---------------------------------------------------------------------
++-- Never leave a practice without an active admin
++-- ---------------------------------------------------------------------
++create or replace function guard_last_practice_admin()
++returns trigger language plpgsql as $$
++-- Runs as the caller (not security definer), so it can tell app users
++-- apart from Care Africa staff working in the SQL editor or with the
++-- service role, and from whole-practice or whole-account deletions.
++declare
++  v_was_admin   boolean := old.role = 'practice_admin' and old.is_active;
++  v_still_admin boolean := tg_op = 'UPDATE' and new.role = 'practice_admin' and new.is_active;
++begin
++  if current_user in ('anon', 'authenticated')
++     and v_was_admin and not v_still_admin
++     and not exists (
++       select 1 from practice_members
++       where practice_id = old.practice_id
++         and id <> old.id
++         and role = 'practice_admin'
++         and is_active
++     ) then
++    raise exception 'A practice needs at least one active admin'
++      using errcode = 'P0001',
++            hint = 'Make someone else an admin first.';
++  end if;
++  return case when tg_op = 'DELETE' then old else new end;
++end $$;
++
++drop trigger if exists practice_members_keep_admin on practice_members;
++create trigger practice_members_keep_admin
++  before update of role, is_active or delete on practice_members
++  for each row execute function guard_last_practice_admin();
++
++-- ---------------------------------------------------------------------
++-- Invitations
++-- ---------------------------------------------------------------------
++create table if not exists practice_invitations (
++  id           uuid primary key default gen_random_uuid(),
++  practice_id  uuid not null references practices(id) on delete cascade,
++  email        citext not null,
++  role         user_role not null
++                 check (role in ('staff', 'doctor', 'practice_admin')),
++  token_hash   text not null unique,
++  invited_by   uuid references profiles(id) on delete set null,
++  created_at   timestamptz not null default now(),
++  expires_at   timestamptz not null default now() + interval '7 days',
++  accepted_at  timestamptz,
++  accepted_by  uuid references profiles(id) on delete set null,
++  revoked_at   timestamptz
++);
++
++-- At most one open invitation per email per practice.
++create unique index if not exists practice_invitations_open_idx
++  on practice_invitations (practice_id, email)
++  where accepted_at is null and revoked_at is null;
++
++alter table practice_invitations enable row level security;
++
++drop policy if exists practice_invitations_admin_read on practice_invitations;
++create policy practice_invitations_admin_read on practice_invitations
++  for select using (auth_is_practice_admin(practice_id));
++-- No insert/update/delete policies: changes go through the functions below.
++
++grant select on practice_invitations to authenticated;
++
++create or replace function _invite_token_hash(p_token text)
++returns text language sql immutable as $$
++  select encode(sha256(convert_to(p_token, 'UTF8')), 'hex');
++$$;
++
++-- Create (or replace) an invitation. Returns the secret link token once;
++-- only its hash is stored.
++create or replace function create_invitation(p_practice uuid, p_email text, p_role user_role)
++returns table (invitation_id uuid, token text, expires_at timestamptz)
++language plpgsql security definer set search_path = public as $$
++declare
++  v_email citext := lower(btrim(p_email));
++  v_token text := replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '');
++  v_id uuid;
++  v_expires timestamptz;
++begin
++  if not auth_is_practice_admin(p_practice) then
++    raise exception 'Only a practice admin can invite staff' using errcode = '42501';
++  end if;
++  if p_role not in ('staff', 'doctor', 'practice_admin') then
++    raise exception 'Choose a role: front desk, practitioner or practice admin';
++  end if;
++  if v_email is null or v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$' then
++    raise exception 'Enter a valid email address';
++  end if;
++  if exists (
++    select 1 from practice_members m join profiles p on p.id = m.profile_id
++    where m.practice_id = p_practice and m.is_active and p.email = v_email
++  ) then
++    raise exception '% is already on your team', v_email;
++  end if;
++
++  -- A new invite replaces any open one for the same person.
++  update practice_invitations set revoked_at = now()
++   where practice_id = p_practice and email = v_email
++     and accepted_at is null and revoked_at is null;
++
++  insert into practice_invitations (practice_id, email, role, token_hash, invited_by)
++  values (p_practice, v_email, p_role, _invite_token_hash(v_token), auth.uid())
++  returning id, practice_invitations.expires_at into v_id, v_expires;
++
++  return query select v_id, v_token, v_expires;
++end $$;
++
++create or replace function revoke_invitation(p_invitation uuid)
++returns void language plpgsql security definer set search_path = public as $$
++declare v_practice uuid;
++begin
++  select practice_id into v_practice from practice_invitations where id = p_invitation;
++  if v_practice is null or not auth_is_practice_admin(v_practice) then
++    raise exception 'Only a practice admin can cancel invitations' using errcode = '42501';
++  end if;
++  update practice_invitations set revoked_at = now()
++   where id = p_invitation and accepted_at is null and revoked_at is null;
++end $$;
++
++-- What the invite page shows before anyone signs in. Knowing the token
++-- is the permission to see this.
++create or replace function get_invitation(p_token text)
++returns jsonb language plpgsql stable security definer set search_path = public as $$
++declare v practice_invitations%rowtype; v_name text;
++begin
++  select * into v from practice_invitations where token_hash = _invite_token_hash(p_token);
++  if not found then
++    return jsonb_build_object('status', 'invalid');
++  end if;
++  select name into v_name from practices where id = v.practice_id;
++  return jsonb_build_object(
++    'status', case
++                when v.accepted_at is not null then 'accepted'
++                when v.revoked_at  is not null then 'revoked'
++                when v.expires_at < now()      then 'expired'
++                else 'pending' end,
++    'practice_name', v_name,
++    'role', v.role,
++    'email', v.email,
++    'expires_at', v.expires_at
++  );
++end $$;
++
++-- Join the practice. The signed-in account's email must match the invite.
++create or replace function accept_invitation(p_token text)
++returns uuid language plpgsql security definer set search_path = public as $$
++declare
++  v practice_invitations%rowtype;
++  v_uid uuid := auth.uid();
++  v_email citext;
++begin
++  if v_uid is null then
++    raise exception 'Sign in to accept this invitation' using errcode = '42501';
++  end if;
++
++  select * into v from practice_invitations
++   where token_hash = _invite_token_hash(p_token)
++   for update;
++
++  if not found then
++    raise exception 'This invitation link isn''t valid';
++  end if;
++  if v.accepted_at is not null then
++    if v.accepted_by = v_uid then return v.practice_id; end if;
++    raise exception 'This invitation has already been used';
++  end if;
++  if v.revoked_at is not null then
++    raise exception 'This invitation was cancelled. Ask your practice admin for a new link.';
++  end if;
++  if v.expires_at < now() then
++    raise exception 'This invitation has expired. Ask your practice admin for a new link.';
++  end if;
++
++  select email into v_email from auth.users where id = v_uid;
++  if v_email is distinct from v.email then
++    raise exception 'This invitation was sent to %. Sign in with that email address.', v.email
++      using errcode = '42501';
++  end if;
++
++  insert into practice_members (practice_id, profile_id, role, is_active)
++  values (v.practice_id, v_uid, v.role, true)
++  on conflict (practice_id, profile_id)
++    do update set role = excluded.role, is_active = true;
++
++  -- People who signed up through an invite start as 'patient' profiles.
++  update profiles set role = v.role where id = v_uid and role = 'patient';
++
++  update practice_invitations set accepted_at = now(), accepted_by = v_uid where id = v.id;
++  return v.practice_id;
++end $$;
++
++-- Change a team member's role or remove (deactivate) them.
++create or replace function update_team_member(p_member uuid, p_role user_role, p_active boolean)
++returns void language plpgsql security definer set search_path = public as $$
++declare v_practice uuid;
++begin
++  select practice_id into v_practice from practice_members where id = p_member;
++  if v_practice is null or not auth_is_practice_admin(v_practice) then
++    raise exception 'Only a practice admin can change the team' using errcode = '42501';
++  end if;
++  if p_role not in ('staff', 'doctor', 'practice_admin') then
++    raise exception 'Choose a role: front desk, practitioner or practice admin';
++  end if;
++  -- Same rule as the trigger (which this security-definer function
++  -- would otherwise bypass): keep at least one active admin.
++  if exists (select 1 from practice_members
++              where id = p_member and role = 'practice_admin' and is_active)
++     and not (p_role = 'practice_admin' and p_active)
++     and not exists (select 1 from practice_members
++                      where practice_id = v_practice and id <> p_member
++                        and role = 'practice_admin' and is_active) then
++    raise exception 'A practice needs at least one active admin'
++      using errcode = 'P0001', hint = 'Make someone else an admin first.';
++  end if;
++  update practice_members set role = p_role, is_active = p_active where id = p_member;
++end $$;
++
++revoke execute on function _invite_token_hash(text) from public;
++revoke execute on function create_invitation(uuid, text, user_role) from public;
++revoke execute on function revoke_invitation(uuid) from public;
++revoke execute on function get_invitation(text) from public;
++revoke execute on function accept_invitation(text) from public;
++revoke execute on function update_team_member(uuid, user_role, boolean) from public;
++grant execute on function create_invitation(uuid, text, user_role) to authenticated;
++grant execute on function revoke_invitation(uuid) to authenticated;
++grant execute on function get_invitation(text) to anon, authenticated;
++grant execute on function accept_invitation(text) to authenticated;
++grant execute on function update_team_member(uuid, user_role, boolean) to authenticated;
++
++commit;
+diff --git a/supabase/tests/staff_invites_test.sql b/supabase/tests/staff_invites_test.sql
+new file mode 100644
+index 0000000..6eafe9f
+--- /dev/null
++++ b/supabase/tests/staff_invites_test.sql
+@@ -0,0 +1,202 @@
++-- =====================================================================
++-- Care Africa — tests for 0007 (staff invites, roles, clinical access)
++-- =====================================================================
++--   psql "$DATABASE_URL" -f supabase/tests/staff_invites_test.sql
++-- Seeds data, asserts, then rolls back.
++-- =====================================================================
++
++begin;
++
++grant usage on schema public to authenticated, anon;
++grant all on all tables in schema public to authenticated;
++
++create or replace function _assert(label text, actual text, expected text)
++returns void language plpgsql as $$
++begin
++  if actual is distinct from expected then
++    raise exception 'FAIL  %  got[%] want[%]', label, actual, expected;
++  end if;
++  raise notice 'pass  %', label;
++end $$;
++
++-- Run a statement as a user ('anon' when actor is null); 'ok' or the error.
++create or replace function _try_as(actor uuid, q text)
++returns text language plpgsql as $$
++begin
++  perform set_config('request.jwt.claim.sub', coalesce(actor::text, ''), true);
++  perform set_config('role', case when actor is null then 'anon' else 'authenticated' end, true);
++  execute q;
++  perform set_config('role', 'postgres', true);
++  return 'ok';
++exception when others then
++  perform set_config('role', 'postgres', true);
++  return sqlerrm;
++end $$;
++
++-- Read one value as a user.
++create or replace function _read_as(actor uuid, q text)
++returns text language plpgsql as $$
++declare out text;
++begin
++  perform set_config('request.jwt.claim.sub', coalesce(actor::text, ''), true);
++  perform set_config('role', case when actor is null then 'anon' else 'authenticated' end, true);
++  execute q into out;
++  perform set_config('role', 'postgres', true);
++  return coalesce(out, '');
++exception when others then
++  perform set_config('role', 'postgres', true);
++  return 'ERROR: ' || sqlerrm;
++end $$;
++
++-- People:
++--   a1  owner of Seaview (practice admin)
++--   f1  will be invited as front desk
++--   d1  will be invited as practitioner
++--   x1  stranger with their own practice
++insert into auth.users (id, email, raw_user_meta_data) values
++  ('00000000-0000-0000-0000-0000000000a1', 'owner@seaview.test',  '{"practice_name":"Seaview"}'),
++  ('00000000-0000-0000-0000-0000000000f1', 'desk@seaview.test',   '{"full_name":"Fikile Desk"}'),
++  ('00000000-0000-0000-0000-0000000000d1', 'doc@seaview.test',    '{"full_name":"Dr Dube"}'),
++  ('00000000-0000-0000-0000-0000000000e1', 'other@elsewhere.test','{"practice_name":"Elsewhere"}');
++
++select set_config('t.p', (select practice_id::text from practice_members
++                           where profile_id = '00000000-0000-0000-0000-0000000000a1'), false);
++
++select _assert('invite signup does not create a practice',
++  (select count(*)::text from practice_members where profile_id = '00000000-0000-0000-0000-0000000000f1'), '0');
++
++-- ---------- creating invitations ----------
++select _assert('front desk cannot be invited by a stranger',
++  _try_as('00000000-0000-0000-0000-0000000000e1',
++    format('select create_invitation(%L, %L, %L)', current_setting('t.p'), 'desk@seaview.test', 'staff')),
++  'Only a practice admin can invite staff');
++
++create temp table tok (who text, token text);
++grant all on tok to authenticated, anon;
++
++select _try_as('00000000-0000-0000-0000-0000000000a1',
++  format('insert into tok select %L, token from create_invitation(%L, %L, %L)', 'desk', current_setting('t.p'), 'Desk@Seaview.test ', 'staff'));
++select _try_as('00000000-0000-0000-0000-0000000000a1',
++  format('insert into tok select %L, token from create_invitation(%L, %L, %L)', 'doc', current_setting('t.p'), 'doc@seaview.test', 'doctor'));
++select _assert('admin can invite (two invitations made)', (select count(*)::text from tok), '2');
++select _assert('only a hash of the token is stored',
++  (select count(*)::text from practice_invitations i join tok on i.token_hash = tok.token), '0');
++select _assert('admin can see the practice''s invitations',
++  _read_as('00000000-0000-0000-0000-0000000000a1', 'select count(*)::text from practice_invitations'), '2');
++select _assert('stranger cannot see them',
++  _read_as('00000000-0000-0000-0000-0000000000e1', 'select count(*)::text from practice_invitations'), '0');
++select _assert('bad email is refused',
++  _try_as('00000000-0000-0000-0000-0000000000a1',
++    format('select create_invitation(%L, %L, %L)', current_setting('t.p'), 'not-an-email', 'staff')),
++  'Enter a valid email address');
++select _assert('existing member cannot be invited again',
++  _try_as('00000000-0000-0000-0000-0000000000a1',
++    format('select create_invitation(%L, %L, %L)', current_setting('t.p'), 'owner@seaview.test', 'staff')),
++  'owner@seaview.test is already on your team');
++
++-- ---------- preview and accepting ----------
++select _assert('anyone with the link sees practice and role',
++  _read_as(null, format('select ((get_invitation(%L))->>%L) || %L || ((get_invitation(%L))->>%L)',
++    (select token from tok where who = 'desk'), 'practice_name', '/', (select token from tok where who = 'desk'), 'role')),
++  'Seaview/staff');
++select _assert('a made-up link is invalid',
++  _read_as(null, format('select (get_invitation(%L))->>%L', 'nope', 'status')), 'invalid');
++
++select _assert('the wrong account cannot accept',
++  _try_as('00000000-0000-0000-0000-0000000000d1',
++    format('select accept_invitation(%L)', (select token from tok where who = 'desk'))),
++  'This invitation was sent to desk@seaview.test. Sign in with that email address.');
++select _assert('signed-out people cannot accept',
++  _try_as(null, format('select accept_invitation(%L)', (select token from tok where who = 'desk'))),
++  'permission denied for function accept_invitation');
++
++select _assert('front desk accepts their invitation',
++  _try_as('00000000-0000-0000-0000-0000000000f1',
++    format('select accept_invitation(%L)', (select token from tok where who = 'desk'))), 'ok');
++select _assert('front desk is now a member with role staff',
++  (select role::text from practice_members where profile_id = '00000000-0000-0000-0000-0000000000f1'
++     and practice_id = current_setting('t.p')::uuid), 'staff');
++select _assert('accepting twice is harmless',
++  _try_as('00000000-0000-0000-0000-0000000000f1',
++    format('select accept_invitation(%L)', (select token from tok where who = 'desk'))), 'ok');
++select _assert('a used link shows as accepted',
++  _read_as(null, format('select (get_invitation(%L))->>%L', (select token from tok where who = 'desk'), 'status')), 'accepted');
++
++select _assert('practitioner accepts',
++  _try_as('00000000-0000-0000-0000-0000000000d1',
++    format('select accept_invitation(%L)', (select token from tok where who = 'doc'))), 'ok');
++
++-- ---------- expired and cancelled ----------
++select _try_as('00000000-0000-0000-0000-0000000000a1',
++  format('insert into tok select %L, token from create_invitation(%L, %L, %L)', 'late', current_setting('t.p'), 'late@seaview.test', 'staff'));
++update practice_invitations set expires_at = now() - interval '1 minute' where email = 'late@seaview.test';
++select _assert('expired links are refused',
++  _read_as(null, format('select (get_invitation(%L))->>%L', (select token from tok where who = 'late'), 'status')), 'expired');
++
++select _try_as('00000000-0000-0000-0000-0000000000a1',
++  format('insert into tok select %L, token from create_invitation(%L, %L, %L)', 'again', current_setting('t.p'), 'late@seaview.test', 'staff'));
++select _assert('a new invite replaces the old one',
++  (select count(*)::text from practice_invitations where email = 'late@seaview.test' and revoked_at is null and accepted_at is null), '1');
++select _try_as('00000000-0000-0000-0000-0000000000a1',
++  format('select revoke_invitation(%L)', (select id from practice_invitations where email = 'late@seaview.test' and revoked_at is null)));
++select _assert('admin can cancel an invitation',
++  _read_as(null, format('select (get_invitation(%L))->>%L', (select token from tok where who = 'again'), 'status')), 'revoked');
++
++-- ---------- clinical access by role ----------
++insert into patients (id, practice_id, first_name) values
++  ('00000000-0000-0000-0000-00000000aaaa', current_setting('t.p')::uuid, 'Thandi');
++insert into patient_conditions (practice_id, patient_id, name)
++  values (current_setting('t.p')::uuid, '00000000-0000-0000-0000-00000000aaaa', 'Asthma');
++
++select _assert('front desk can see members',
++  _read_as('00000000-0000-0000-0000-0000000000f1', 'select count(*)::text from patients'), '1');
++select _assert('front desk cannot see clinical records',
++  _read_as('00000000-0000-0000-0000-0000000000f1', 'select count(*)::text from patient_conditions'), '0');
++select _assert('front desk cannot write clinical records',
++  (_try_as('00000000-0000-0000-0000-0000000000f1',
++    format('insert into patient_conditions (practice_id, patient_id, name) values (%L, %L, %L)',
++      current_setting('t.p'), '00000000-0000-0000-0000-00000000aaaa', 'Flu')) like '%row-level security%')::text, 'true');
++select _assert('practitioner can see clinical records',
++  _read_as('00000000-0000-0000-0000-0000000000d1', 'select count(*)::text from patient_conditions'), '1');
++select _assert('admin can see clinical records',
++  _read_as('00000000-0000-0000-0000-0000000000a1', 'select count(*)::text from patient_conditions'), '1');
++
++-- ---------- managing the team ----------
++select _assert('front desk cannot change roles',
++  _try_as('00000000-0000-0000-0000-0000000000f1',
++    format('select update_team_member(%L, %L, true)',
++      (select id from practice_members where profile_id = '00000000-0000-0000-0000-0000000000f1'), 'practice_admin')),
++  'Only a practice admin can change the team');
++
++select _assert('the only admin cannot step down',
++  _try_as('00000000-0000-0000-0000-0000000000a1',
++    format('select update_team_member(%L, %L, true)',
++      (select id from practice_members where profile_id = '00000000-0000-0000-0000-0000000000a1'), 'doctor')),
++  'A practice needs at least one active admin');
++select _assert('the only admin cannot be removed directly either',
++  _try_as('00000000-0000-0000-0000-0000000000a1',
++    format('update practice_members set is_active = false where profile_id = %L', '00000000-0000-0000-0000-0000000000a1')),
++  'A practice needs at least one active admin');
++
++select _assert('admin can promote the practitioner to admin',
++  _try_as('00000000-0000-0000-0000-0000000000a1',
++    format('select update_team_member(%L, %L, true)',
++      (select id from practice_members where profile_id = '00000000-0000-0000-0000-0000000000d1'), 'practice_admin')), 'ok');
++select _assert('with two admins, the owner can step down',
++  _try_as('00000000-0000-0000-0000-0000000000a1',
++    format('select update_team_member(%L, %L, true)',
++      (select id from practice_members where profile_id = '00000000-0000-0000-0000-0000000000a1'), 'doctor')), 'ok');
++
++select _assert('new admin removes front desk',
++  _try_as('00000000-0000-0000-0000-0000000000d1',
++    format('select update_team_member(%L, %L, false)',
++      (select id from practice_members where profile_id = '00000000-0000-0000-0000-0000000000f1'), 'staff')), 'ok');
++select _assert('removed staff lose access to members',
++  _read_as('00000000-0000-0000-0000-0000000000f1', 'select count(*)::text from patients'), '0');
++
++-- Care Africa (SQL editor) can still delete a whole practice.
++delete from practices where id = current_setting('t.p')::uuid;
++select _assert('deleting a practice is not blocked by the admin rule',
++  (select count(*)::text from practices where id = current_setting('t.p')::uuid), '0');
++
++rollback;
+-- 
+2.43.0
+

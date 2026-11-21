@@ -15,6 +15,7 @@ import Login from "./pages/Login";
 import ProtectedRoute from "./components/ProtectedRoute";
 import Inventory from "./pages/Inventory";
 import Register from "./pages/Register";
+import AcceptInvite from "./pages/AcceptInvite";
 import AuthCallback from './pages/AuthCallback';
 import { PracticeProvider, usePractice } from "./context/PracticeContext";
 import { ConfigProvider } from "antd";
@@ -62,6 +63,7 @@ const App = () => (
           <Route path="/onboarding" element={<Onboarding />} />
           <Route path="/verify-email" element={<VerifyEmail />} />
           <Route path="/register" element={<Register />} />
+          <Route path="/invite/:token" element={<AcceptInvite />} />
           {/* Protected routes */}
           <Route path="/" element={
             <ProtectedRoute>
