@@ -1,6 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '@/config/supabase';
+import { PRACTICE_TYPES, PRACTICE_TYPE_GROUPS, getPracticeType } from '@/lib/practiceTypes';
+import { recommendedModules } from '@/lib/modules';
+import { ModuleSummary } from '@/components/modules/ModuleSummary';
+import { CareAfricaLogo } from '@/components/brand/CareAfricaLogo';
 import { toast } from 'sonner';
 import PhoneInput from '@/components/ui/phone-input';
 import { usePractice } from '@/context/PracticeContext';
@@ -10,6 +14,7 @@ import {
   saveBusinessHours,
   saveDoctors,
   saveGeneral,
+  saveModules,
   saveRewardRules,
   saveServicesSection,
   uploadPracticeLogo,
@@ -18,7 +23,7 @@ import { AddressAutocomplete } from '@/components/AddressAutocomplete';
 
 /// <reference types="@types/google.maps" />
 import { Session } from '@supabase/supabase-js';
-import { PracticeCategory, PracticeCategoryOption } from '@/types/practice';
+import { PracticeCategory } from '@/types/practice';
 
 interface BusinessHours {
   start: string;
@@ -129,26 +134,15 @@ const commonInsuranceProviders = [
   'Keyhealth'
 ];
 
-const practiceCategories: PracticeCategoryOption[] = [
-  { id: 'dental', name: 'Dental Practice', icon: '🦷' },
-  { id: 'medical', name: 'Medical Practice', icon: '👨‍⚕️' },
-  { id: 'wellness', name: 'Wellness Spa', icon: '💆' },
-  { id: 'physio', name: 'Physiotherapy', icon: '🤸' },
-  { id: 'chiro', name: 'Chiropractic', icon: '🦴' },
-  { id: 'optometry', name: 'Optometry', icon: '👁️' },
-  { id: 'psychology', name: 'Psychology', icon: '🧠' },
-  { id: 'nutrition', name: 'Nutrition', icon: '🥗' },
-  { id: 'alternative', name: 'Alternative Medicine', icon: '🌿' },
-  { id: 'other', name: 'Other', icon: '➕' }
-] as const;
 
-const TOTAL_STEPS = 4;
+const TOTAL_STEPS = 5;
 
 export const Onboarding = () => {
   const navigate = useNavigate();
   const { practice, loading: practiceLoading, refresh } = usePractice();
   const practiceId = practice?.id ?? null;
   const [currentStep, setCurrentStep] = useState(1);
+
   const [loading, setLoading] = useState(false);
   const [practiceData, setPracticeData] = useState<PracticeData>({
     address: '',
@@ -176,8 +170,12 @@ export const Onboarding = () => {
       perReferral: 0,
       perReview: 0
     },
-    category: 'other' as PracticeCategory
+    category: '' as PracticeCategory
   });
+
+  // Modules this type of practice starts with (and whether to ask about medical aids)
+  const typeModules = recommendedModules(practiceData.category, practice?.plan ?? 'practice');
+  const showsMedicalAids = typeModules.clinicalRecords === 'full';
 
   // Load existing practice data (the practice was created at signup)
   useEffect(() => {
@@ -216,7 +214,7 @@ export const Onboarding = () => {
           services: practice.services?.length ? practice.services : prev.services,
           selectedRewardCampaigns: practice.reward_campaigns?.length ? practice.reward_campaigns : prev.selectedRewardCampaigns,
           pointsRules: practice.points_rules ?? prev.pointsRules,
-          category: (practice.category as PracticeCategory) || prev.category,
+          category: practice.category && practice.category !== 'other' ? (practice.category as PracticeCategory) : prev.category,
         }));
       } catch (error) {
         console.error('Error loading practice data:', error);
@@ -230,6 +228,10 @@ export const Onboarding = () => {
   // "Continue" moves to the next step; only the last step saves everything.
   const handleStepSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (currentStep === 1 && !practiceData.category) {
+      toast.error('Choose the type of practice that fits you best');
+      return;
+    }
     if (currentStep < TOTAL_STEPS) {
       setCurrentStep(step => step + 1);
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -254,8 +256,13 @@ export const Onboarding = () => {
         province: practiceData.province,
         postal_code: practiceData.postal_code,
         display_picture: practiceData.displayPicture,
-        category: practiceData.category,
+        category: practiceData.category || 'other',
       });
+      // Switch on the modules this type of practice usually needs. Skipped
+      // if the modules migration (0006) isn't applied yet.
+      if (practice?.plan) {
+        await saveModules(practiceId, recommendedModules(practiceData.category, practice.plan));
+      }
       await saveBusinessHours(practiceId, practiceData.businessHours);
       await saveServicesSection(practiceId, {
         services: practiceData.services,
@@ -866,11 +873,7 @@ export const Onboarding = () => {
       <div className="bg-white border-b border-gray-200 fixed top-0 left-0 right-0 z-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
-            <img 
-              src={null} 
-              alt="Care Africa" 
-              className="h-8"
-            />
+            <CareAfricaLogo />
             <div className="flex items-center space-x-4">
               <span className="text-sm text-gray-500">Need help?</span>
               <button className="text-primary hover:text-primary text-sm font-medium">Contact Support</button>
@@ -888,7 +891,7 @@ export const Onboarding = () => {
                   <div className="bg-white rounded-xl p-6 shadow-sm">
                     <h3 className="text-lg font-medium text-gray-900 mb-4">Setup Progress</h3>
                     <div className="space-y-4">
-                      {['Practice Details', 'Business Hours', 'Services', 'Rewards'].map((step, index) => (
+                      {['Practice Type', 'Practice Details', 'Business Hours', 'Services', 'Rewards'].map((step, index) => (
                         <div key={index} className="flex items-center">
                           <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
                             index + 1 <= currentStep
@@ -923,6 +926,72 @@ export const Onboarding = () => {
             <div className="col-span-9">
               <form onSubmit={handleStepSubmit} className="space-y-6">
                 {currentStep === 1 && (
+                  <div className="bg-white rounded-xl shadow-sm p-8">
+                    <div className="mb-8">
+                      <h2 className="text-2xl font-bold text-gray-900">What kind of practice are you?</h2>
+                      <p className="mt-2 text-gray-600">
+                        We'll switch on the features your kind of practice needs. You can change them any time in Settings.
+                      </p>
+                    </div>
+
+                    <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_280px]">
+                      <div className="space-y-8">
+                        {PRACTICE_TYPE_GROUPS.map((group) => (
+                          <fieldset key={group.id}>
+                            <legend className="text-sm font-bold text-ink">{group.title}</legend>
+                            <p className="mt-0.5 text-xs text-muted-foreground">{group.description}</p>
+                            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                              {PRACTICE_TYPES.filter((t) => t.group === group.id).map((t) => {
+                                const selected = practiceData.category === t.id;
+                                const Icon = t.icon;
+                                return (
+                                  <button
+                                    key={t.id}
+                                    type="button"
+                                    aria-pressed={selected}
+                                    onClick={() => setPracticeData((prev) => ({ ...prev, category: t.id }))}
+                                    className={`flex items-start gap-3 rounded-xl border p-3.5 text-left transition-all ${
+                                      selected
+                                        ? 'border-primary bg-primary/5 ring-4 ring-primary/10'
+                                        : 'border-border bg-card hover:border-primary/40 hover:bg-muted/40'
+                                    }`}
+                                  >
+                                    <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${selected ? 'bg-primary text-primary-foreground' : 'bg-muted text-ink'}`}>
+                                      <Icon className="h-[18px] w-[18px]" />
+                                    </span>
+                                    <span className="min-w-0">
+                                      <span className="block text-sm font-semibold text-ink">{t.name}</span>
+                                      <span className="block text-xs text-muted-foreground">{t.examples}</span>
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </fieldset>
+                        ))}
+                      </div>
+
+                      <aside className="xl:sticky xl:top-24 h-fit rounded-xl border border-border bg-background/60 p-5">
+                        <p className="text-sm font-bold text-ink">What you'll get</p>
+                        {practiceData.category ? (
+                          <>
+                            <p className="mt-0.5 mb-4 text-xs text-muted-foreground">
+                              Recommended for: {getPracticeType(practiceData.category).name}
+                            </p>
+                            <ModuleSummary
+                              modules={typeModules}
+                              claimsRecommended={getPracticeType(practiceData.category).defaults.claims}
+                            />
+                          </>
+                        ) : (
+                          <p className="mt-2 text-sm text-muted-foreground">Choose a type to see the features you'll start with.</p>
+                        )}
+                      </aside>
+                    </div>
+                  </div>
+                )}
+
+                {currentStep === 2 && (
                   <div className="bg-white rounded-xl shadow-sm p-8">
                     <div className="mb-8">
                       <h2 className="text-2xl font-bold text-gray-900">Practice Details</h2>
@@ -1047,7 +1116,7 @@ export const Onboarding = () => {
                   </div>
                 )}
 
-                {currentStep === 2 && (
+                {currentStep === 3 && (
                   <div className="bg-white rounded-xl shadow-sm p-8">
                     <div className="mb-8">
                       <h2 className="text-2xl font-bold text-gray-900">Business Hours</h2>
@@ -1137,11 +1206,11 @@ export const Onboarding = () => {
                   </div>
                 )}
 
-                {currentStep === 3 && (
+                {currentStep === 4 && (
                   <div className="bg-white rounded-xl shadow-sm p-8">
                     <div className="mb-8">
-                      <h2 className="text-2xl font-bold text-gray-900">Services, Specialists & Insurance</h2>
-                      <p className="mt-2 text-gray-600">Add your practice specialties, specialists, services, and accepted insurance providers</p>
+                      <h2 className="text-2xl font-bold text-gray-900">{showsMedicalAids ? 'Services, Team & Medical Aids' : 'Services & Team'}</h2>
+                      <p className="mt-2 text-gray-600">{showsMedicalAids ? 'Add your specialties, practitioners, services and the medical aids you accept' : 'Add your specialties, practitioners and services'}</p>
                     </div>
 
                     <div className="space-y-8">
@@ -1337,10 +1406,11 @@ export const Onboarding = () => {
                         </div>
                       </div>
 
+                      {showsMedicalAids && (
                       <div className="pt-6 border-t border-gray-200">
                         <div className="mb-6">
-                          <h3 className="text-lg font-medium text-gray-900">Accepted Insurance Providers</h3>
-                          <p className="mt-1 text-sm text-gray-500">Select the insurance providers you accept</p>
+                          <h3 className="text-lg font-medium text-gray-900">Medical aids you accept</h3>
+                          <p className="mt-1 text-sm text-gray-500">Patients see this list, and it will be used for claims</p>
                         </div>
 
                         <div className="grid grid-cols-2 gap-4">
@@ -1421,11 +1491,12 @@ export const Onboarding = () => {
                             ))}
                         </div>
                       </div>
+                      )}
                     </div>
                   </div>
                 )}
 
-                {currentStep === 4 && (
+                {currentStep === 5 && (
                   <div className="bg-white rounded-xl shadow-sm p-8">
                     <div className="mb-8">
                       <h2 className="text-2xl font-bold text-gray-900">Rewards Program</h2>

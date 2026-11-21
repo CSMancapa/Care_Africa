@@ -14,6 +14,9 @@ import { useNavigate } from 'react-router-dom';
 import { Checkbox } from '@/components/ui/checkbox';
 import { AddressAutocomplete } from '@/components/AddressAutocomplete';
 import { BrandingSettings } from '@/components/Settings/BrandingSettings';
+import { ModulesSettings } from '@/components/Settings/ModulesSettings';
+import { PRACTICE_TYPES, PRACTICE_TYPE_GROUPS } from '@/lib/practiceTypes';
+import { useModules } from '@/lib/modules';
 import { usePractice } from '@/context/PracticeContext';
 import {
   loadPracticeSettings,
@@ -54,6 +57,7 @@ export default function Settings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [practiceData, setPracticeData] = useState<PracticeData | null>(null);
+  const { showsMedicalAids } = useModules();
 
   useEffect(() => {
     if (practiceLoading) return;
@@ -140,7 +144,8 @@ export default function Settings() {
           <TabsList className="bg-white border-b border-gray-200 w-full justify-start space-x-8 px-4">
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="hours">Business Hours</TabsTrigger>
-            <TabsTrigger value="services">Services & Insurance</TabsTrigger>
+            <TabsTrigger value="modules">Modules</TabsTrigger>
+            <TabsTrigger value="services">{showsMedicalAids ? 'Services & Medical Aids' : 'Services'}</TabsTrigger>
             <TabsTrigger value="rewards">Rewards Program</TabsTrigger>
             <TabsTrigger value="doctors">Doctors</TabsTrigger>
             <TabsTrigger value="branding">Branding</TabsTrigger>
@@ -152,6 +157,10 @@ export default function Settings() {
               onSave={(data) => runSave((id) => saveGeneral(id, data), true)}
               saving={saving}
             />
+          </TabsContent>
+
+          <TabsContent value="modules">
+            <ModulesSettings />
           </TabsContent>
 
           <TabsContent value="hours">
@@ -303,16 +312,27 @@ function GeneralSettings({ practiceData, onSave, saving }: SettingsSectionProps)
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="category">Practice Category</Label>
-              <Input
+              <Label htmlFor="category">Type of practice</Label>
+              <select
                 id="category"
-                value={formData.category}
+                value={PRACTICE_TYPES.some(t => t.id === formData.category) ? formData.category : 'other'}
                 onChange={(e) => setFormData(prev => ({
                   ...prev,
                   category: e.target.value
                 }))}
-                placeholder="e.g., Dental Practice, Medical Practice, etc."
-              />
+                className="flex h-10 w-full rounded-lg border border-input bg-card px-3 text-sm focus-visible:outline-none focus-visible:border-primary focus-visible:ring-4 focus-visible:ring-primary/15"
+              >
+                {PRACTICE_TYPE_GROUPS.map(group => (
+                  <optgroup key={group.id} label={group.title}>
+                    {PRACTICE_TYPES.filter(t => t.group === group.id).map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+              <p className="text-xs text-muted-foreground">
+                Changing this doesn't change your features. Choose those under Modules.
+              </p>
             </div>
 
             <div className="space-y-2">
@@ -488,6 +508,7 @@ function BusinessHoursSettings({ practiceData, onSave, saving }: SettingsSection
 }
 
 function ServicesSettings({ practiceData, onSave, saving }: SettingsSectionProps) {
+  const { showsMedicalAids } = useModules();
   const [services, setServices] = useState<ServicePrice[]>(
     practiceData?.services || []
   );
@@ -722,10 +743,11 @@ function ServicesSettings({ practiceData, onSave, saving }: SettingsSectionProps
         </CardContent>
       </Card>
 
+      {showsMedicalAids && (
       <Card>
         <CardHeader>
-          <CardTitle>Accepted Insurance Providers</CardTitle>
-          <CardDescription>Select the insurance providers you accept</CardDescription>
+          <CardTitle>Medical aids you accept</CardTitle>
+          <CardDescription>Patients see this list, and it will be used for claims</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
@@ -800,6 +822,7 @@ function ServicesSettings({ practiceData, onSave, saving }: SettingsSectionProps
           </div>
         </CardContent>
       </Card>
+      )}
 
       <div className="flex justify-end">
         <Button type="submit" disabled={saving}>

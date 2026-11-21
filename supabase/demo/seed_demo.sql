@@ -95,6 +95,7 @@ begin
     province            = 'Eastern Cape',
     postal_code         = '6070',
     category            = 'dental',
+    clinical_records    = 'full',        -- needs migration 0006
     brand_primary_color = '#0E7C7B',
     brand_accent_color  = '#F2A541',
     specialties         = array['General dentistry','Cosmetic dentistry','Paediatric dentistry'],

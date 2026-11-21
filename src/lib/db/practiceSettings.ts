@@ -168,6 +168,17 @@ export async function saveGeneral(
   });
 }
 
+/** Switch modules on or off. The database refuses anything the plan doesn't include. */
+export async function saveModules(
+  practiceId: string,
+  m: { clinicalRecords: "off" | "intake" | "full"; claims: boolean }
+) {
+  await updatePractice(practiceId, {
+    clinical_records: m.clinicalRecords,
+    claims_enabled: m.claims,
+  });
+}
+
 export async function saveBusinessHours(practiceId: string, hours: BusinessHours) {
   await updatePractice(practiceId, { business_hours: hours });
 }

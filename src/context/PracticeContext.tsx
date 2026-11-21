@@ -10,6 +10,12 @@ export interface CurrentPractice {
   logo_url: string | null;
   brand_primary_color: string | null;
   brand_accent_color: string | null;
+  /** Practice type id, see src/lib/practiceTypes.ts. */
+  category: string;
+  /** Subscription plan and modules, see src/lib/modules.ts. */
+  plan: "starter" | "practice" | "network";
+  clinical_records: "off" | "intake" | "full";
+  claims_enabled: boolean;
   role: PracticeRole;
 }
 
@@ -46,12 +52,22 @@ export function PracticeProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    const { data, error } = await supabase
-      .from("practice_members")
-      .select("role, practice:practices(id, name, logo_url, brand_primary_color, brand_accent_color)")
-      .eq("profile_id", session.user.id)
-      .eq("is_active", true)
-      .order("created_at", { ascending: true });
+    const query = (practiceColumns: string) =>
+      supabase
+        .from("practice_members")
+        .select(`role, practice:practices(${practiceColumns})`)
+        .eq("profile_id", session.user.id)
+        .eq("is_active", true)
+        .order("created_at", { ascending: true });
+
+    const BASE = "id, name, logo_url, brand_primary_color, brand_accent_color";
+    let { data, error } = await query(`${BASE}, category, plan, clinical_records, claims_enabled`);
+    if (error && /does not exist/i.test(error.message)) {
+      // The modules migration (0006) isn't applied yet: carry on without
+      // modules rather than locking everyone out.
+      console.warn("Practice modules not available yet; apply migration 0006.");
+      ({ data, error } = await query(BASE));
+    }
 
     if (error) {
       console.error("Could not load practice membership:", error);
