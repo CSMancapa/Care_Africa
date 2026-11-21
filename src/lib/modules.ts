@@ -45,8 +45,8 @@ export function clinicalAllowed(plan: Plan, level: ClinicalLevel): boolean {
  * Flip these as each part is released.
  */
 export const MODULE_RELEASED = {
-  intake: false,
-  clinicalNotes: false,
+  intake: true,
+  clinicalNotes: true,
   claims: false,
 } as const;
 

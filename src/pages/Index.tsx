@@ -15,6 +15,7 @@ import {
   CheckCircle2,
 
   Inbox,
+  FileHeart,
 } from "lucide-react";
 import React, { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -35,6 +36,8 @@ import { WaitingTimer } from "@/components/Appointment/WaitingTimer";
 import { RandIcon } from "@/components/icons/RandIcon";
 import { formatRandCompact } from "@/lib/currency";
 import { cn } from "@/lib/utils";
+import { useModules } from "@/lib/modules";
+import { canSeeClinical } from "@/lib/roles";
 
 /* ------------------------------------------------------------------ */
 /* Small building blocks                                               */
@@ -138,6 +141,8 @@ const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const practiceId = useCurrentPractice();
   const { practice } = usePractice();
+  const { hasClinical } = useModules();
+  const showRecordLinks = hasClinical && canSeeClinical(practice?.role);
 
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [patients, setPatients] = useState<Patient[]>([]);
@@ -380,6 +385,17 @@ const Dashboard: React.FC = () => {
                           {[services, a.doctor_name].filter(Boolean).join(" · ") || "No services listed"}
                         </p>
                       </div>
+                      {showRecordLinks && a.patient_id && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 shrink-0 gap-1.5 text-muted-foreground hover:text-primary"
+                          onClick={() => navigate(`/patients/${a.patient_id}/record`)}
+                          title="Open clinical record"
+                        >
+                          <FileHeart className="h-4 w-4" /> Record
+                        </Button>
+                      )}
                       {a.status === "waiting" && a.wait_start_time && (
                         <WaitingTimer status={a.status} wait_start_time={a.wait_start_time} />
                       )}

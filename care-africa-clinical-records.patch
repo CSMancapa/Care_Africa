@@ -1,0 +1,3501 @@
+From 62419b68ee932b29900fe9835d10096492f37b73 Mon Sep 17 00:00:00 2001
+From: Care Africa <dev@careafrica.local>
+Date: Sat, 21 Nov 2026 14:45:42 +0200
+Subject: [PATCH] Clinical notes and intake forms on one templates engine
+
+- Templates engine: one format for notes and intake forms (text, choices,
+  yes/no with details, vitals, repeatable rows); records keep a copy of the
+  template they were filled in on
+- Templates: General consultation (SOAP), Treatment record (aesthetics/IV),
+  Health questionnaire, Massage and spa health check, Skin and beauty
+  consultation, Before your treatment (aesthetics/IV)
+- Migration 0010: clinical_notes (drafts private, sign to lock, never
+  edited or deleted once signed), addenda with reasons, intake_submissions
+  (consent + typed name, unchangeable), intake links (hashed, single use,
+  7 days); practitioners/admins read clinical content, front desk sees
+  status only; module switches enforced; activity log without content
+- Pages: member clinical record (timeline, allergy alert), note editor
+  (autosave drafts, required fields on signing, addenda, print), intake on
+  a practice device (locked; staff code to leave), intake by link (no
+  login, practice colours); profile and dashboard shortcuts
+- Demo seed clears clinical records before reseeding
+- Tests: 40 new database checks (205 in total)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EwPyWPTXSAWwnbXCzMZAVM
+---
+ src/App.tsx                                   |   9 +
+ src/components/Dashboard/DashboardLayout.tsx  |   2 +-
+ src/components/Dashboard/DashboardSidebar.tsx |   2 +-
+ src/components/Patient/ViewPatientModal.tsx   |   3 +
+ src/components/forms/FormRenderer.tsx         | 419 ++++++++++++++
+ src/components/intake/IntakeActions.tsx       | 150 +++++
+ src/components/intake/IntakeFormFill.tsx      |  96 ++++
+ src/components/intake/MemberHealthForms.tsx   |  87 +++
+ src/lib/db/clinical.ts                        | 285 ++++++++++
+ src/lib/forms/templates.ts                    | 384 +++++++++++++
+ src/lib/forms/types.ts                        |  99 ++++
+ src/lib/modules.ts                            |   4 +-
+ src/pages/ClinicalNote.tsx                    | 346 ++++++++++++
+ src/pages/ClinicalRecord.tsx                  | 295 ++++++++++
+ src/pages/Index.tsx                           |  16 +
+ src/pages/IntakeByLink.tsx                    | 115 ++++
+ src/pages/IntakeOnDevice.tsx                  | 164 ++++++
+ supabase/demo/seed_demo.sql                   |   5 +
+ supabase/migrations/0010_clinical_records.sql | 514 ++++++++++++++++++
+ supabase/tests/clinical_records_test.sql      | 252 +++++++++
+ 20 files changed, 3243 insertions(+), 4 deletions(-)
+ create mode 100644 src/components/forms/FormRenderer.tsx
+ create mode 100644 src/components/intake/IntakeActions.tsx
+ create mode 100644 src/components/intake/IntakeFormFill.tsx
+ create mode 100644 src/components/intake/MemberHealthForms.tsx
+ create mode 100644 src/lib/db/clinical.ts
+ create mode 100644 src/lib/forms/templates.ts
+ create mode 100644 src/lib/forms/types.ts
+ create mode 100644 src/pages/ClinicalNote.tsx
+ create mode 100644 src/pages/ClinicalRecord.tsx
+ create mode 100644 src/pages/IntakeByLink.tsx
+ create mode 100644 src/pages/IntakeOnDevice.tsx
+ create mode 100644 supabase/migrations/0010_clinical_records.sql
+ create mode 100644 supabase/tests/clinical_records_test.sql
+
+diff --git a/src/App.tsx b/src/App.tsx
+index 288192f..1e0ca8b 100644
+--- a/src/App.tsx
++++ b/src/App.tsx
+@@ -20,6 +20,10 @@ import TwoStepSetup from "./pages/TwoStepSetup";
+ import TwoStepVerify from "./pages/TwoStepVerify";
+ import ForgotPassword from "./pages/ForgotPassword";
+ import ResetPassword from "./pages/ResetPassword";
++import ClinicalRecord from "./pages/ClinicalRecord";
++import ClinicalNote from "./pages/ClinicalNote";
++import IntakeOnDevice from "./pages/IntakeOnDevice";
++import IntakeByLink from "./pages/IntakeByLink";
+ import AuthCallback from './pages/AuthCallback';
+ import { PracticeProvider, usePractice } from "./context/PracticeContext";
+ import { ConfigProvider } from "antd";
+@@ -76,6 +80,11 @@ const App = () => (
+           <Route path="/two-step/verify" element={<TwoStepVerify />} />
+           <Route path="/forgot-password" element={<ForgotPassword />} />
+           <Route path="/reset-password" element={<ResetPassword />} />
++          <Route path="/intake/:token" element={<IntakeByLink />} />
++          <Route path="/patients/:patientId/record" element={<ProtectedRoute><ClinicalRecord /></ProtectedRoute>} />
++          <Route path="/patients/:patientId/notes/new" element={<ProtectedRoute><ClinicalNote /></ProtectedRoute>} />
++          <Route path="/patients/:patientId/notes/:noteId" element={<ProtectedRoute><ClinicalNote /></ProtectedRoute>} />
++          <Route path="/patients/:patientId/intake/new" element={<ProtectedRoute><IntakeOnDevice /></ProtectedRoute>} />
+           {/* Protected routes */}
+           <Route path="/" element={
+             <ProtectedRoute>
+diff --git a/src/components/Dashboard/DashboardLayout.tsx b/src/components/Dashboard/DashboardLayout.tsx
+index 752b6cc..f552369 100644
+--- a/src/components/Dashboard/DashboardLayout.tsx
++++ b/src/components/Dashboard/DashboardLayout.tsx
+@@ -12,7 +12,7 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
+   return (
+     <div className="min-h-screen bg-background">
+       <DashboardSidebar />
+-      <main className="pl-64 min-h-screen flex flex-col">
++      <main className="pl-64 min-h-screen flex flex-col print:pl-0">
+         <div className="mx-auto w-full max-w-[1400px] flex-1 px-8 py-8 xl:px-10">
+           <ErrorBoundary resetKey={location.pathname}>{children}</ErrorBoundary>
+         </div>
+diff --git a/src/components/Dashboard/DashboardSidebar.tsx b/src/components/Dashboard/DashboardSidebar.tsx
+index 5bdbe3b..fb6692b 100644
+--- a/src/components/Dashboard/DashboardSidebar.tsx
++++ b/src/components/Dashboard/DashboardSidebar.tsx
+@@ -92,7 +92,7 @@ export function DashboardSidebar() {
+   };
+ 
+   return (
+-    <aside className="fixed left-0 top-0 z-30 flex h-screen w-64 flex-col border-r border-border bg-card">
++    <aside className="fixed left-0 top-0 z-30 flex h-screen w-64 flex-col border-r border-border bg-card print:hidden">
+       {/* Practice identity, in the practice's own colours */}
+       <div className="px-4 pt-5 pb-4">
+         <div className="relative flex items-center gap-3 rounded-xl border border-border bg-background/60 p-2.5">
+diff --git a/src/components/Patient/ViewPatientModal.tsx b/src/components/Patient/ViewPatientModal.tsx
+index 96e1612..a24f855 100644
+--- a/src/components/Patient/ViewPatientModal.tsx
++++ b/src/components/Patient/ViewPatientModal.tsx
+@@ -11,6 +11,7 @@ import AddAppointmentModal from "../Appointment/AddAppointmentModal";
+ import { Patient } from '@/types/patient';
+ import { useEffect } from 'react';
+ import { logRecordView } from '@/lib/audit';
++import { MemberHealthForms } from '@/components/intake/MemberHealthForms';
+ import type { Appointment } from '@/types/appointment';
+ 
+ interface ViewPatientModalProps {
+@@ -121,6 +122,8 @@ export default function ViewPatientModal({ patient, appointments, isOpen, onClos
+               </div>
+             </Card>
+ 
++            <MemberHealthForms patient={patient} />
++
+             {/* Tabs Section */}
+             <Tabs defaultValue="appointments" className="w-full">
+               <TabsList className="grid w-full grid-cols-2">
+diff --git a/src/components/forms/FormRenderer.tsx b/src/components/forms/FormRenderer.tsx
+new file mode 100644
+index 0000000..ae9329a
+--- /dev/null
++++ b/src/components/forms/FormRenderer.tsx
+@@ -0,0 +1,419 @@
++import { Plus, Trash2 } from "lucide-react";
++import { format } from "date-fns";
++import { Input } from "@/components/ui/input";
++import { Label } from "@/components/ui/label";
++import { Textarea } from "@/components/ui/textarea";
++import { Button } from "@/components/ui/button";
++import { cn } from "@/lib/utils";
++import {
++  VITALS,
++  isAnswered,
++  type AnswerValue,
++  type Answers,
++  type Field,
++  type FormTemplate,
++  type Row,
++  type Vitals,
++  type YesNoAnswer,
++} from "@/lib/forms/types";
++
++/* -------------------------------------------------------------------- */
++/* Filling in                                                            */
++/* -------------------------------------------------------------------- */
++
++function Required() {
++  return <span className="ml-0.5 text-red-600" aria-hidden>*</span>;
++}
++
++function FieldInput({
++  field,
++  value,
++  onChange,
++  invalid,
++  large,
++}: {
++  field: Field;
++  value: AnswerValue;
++  onChange: (v: AnswerValue) => void;
++  invalid?: boolean;
++  large?: boolean;
++}) {
++  const id = `f-${field.id}`;
++  const h = large ? "h-12 text-base" : "";
++  const label = (
++    <Label htmlFor={id} className={cn("text-sm font-semibold text-ink", large && "text-[15px]")}>
++      {field.label}
++      {field.required && <Required />}
++    </Label>
++  );
++  const help = field.help && <p className="text-xs text-muted-foreground">{field.help}</p>;
++  const ring = invalid ? "border-red-400 ring-4 ring-red-100" : "";
++
++  switch (field.type) {
++    case "text":
++    case "date":
++    case "time":
++    case "number":
++      return (
++        <div className="space-y-1.5">
++          {label}
++          <div className="flex items-center gap-2">
++            <Input
++              id={id}
++              type={field.type === "number" ? "number" : field.type}
++              inputMode={field.type === "number" ? "decimal" : undefined}
++              placeholder={"placeholder" in field ? field.placeholder : undefined}
++              value={(value as string) ?? ""}
++              onChange={(e) => onChange(e.target.value)}
++              className={cn(h, ring, field.type === "date" || field.type === "time" ? "max-w-[220px]" : "")}
++            />
++            {field.type === "number" && field.unit && <span className="text-sm text-muted-foreground">{field.unit}</span>}
++          </div>
++          {help}
++        </div>
++      );
++
++    case "textarea":
++      return (
++        <div className="space-y-1.5">
++          {label}
++          <Textarea
++            id={id}
++            rows={field.rows ?? 3}
++            placeholder={field.placeholder}
++            value={(value as string) ?? ""}
++            onChange={(e) => onChange(e.target.value)}
++            className={cn("rounded-lg bg-card", large && "text-base", ring)}
++          />
++          {help}
++        </div>
++      );
++
++    case "select":
++      return (
++        <div className="space-y-1.5">
++          {label}
++          <div className="flex flex-wrap gap-2" role="radiogroup" aria-labelledby={id}>
++            {field.options.map((o) => {
++              const on = value === o;
++              return (
++                <button
++                  key={o}
++                  type="button"
++                  role="radio"
++                  aria-checked={on}
++                  onClick={() => onChange(on ? undefined : o)}
++                  className={cn(
++                    "rounded-full border px-3.5 py-1.5 text-sm transition-all",
++                    large && "px-4 py-2 text-[15px]",
++                    on ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:border-primary/40",
++                    invalid && !on && "border-red-300"
++                  )}
++                >
++                  {o}
++                </button>
++              );
++            })}
++          </div>
++          <span id={id} className="sr-only">{field.label}</span>
++          {help}
++        </div>
++      );
++
++    case "checkboxes": {
++      const selected = Array.isArray(value) ? (value as string[]) : [];
++      const toggle = (o: string) => {
++        if (o === field.noneOption) return onChange(selected.includes(o) ? [] : [o]);
++        const next = selected.includes(o) ? selected.filter((x) => x !== o) : [...selected.filter((x) => x !== field.noneOption), o];
++        onChange(next);
++      };
++      return (
++        <fieldset className="space-y-2">
++          <legend className={cn("mb-1.5 text-sm font-semibold text-ink", large && "text-[15px]")}>
++            {field.label}
++            {field.required && <Required />}
++          </legend>
++          <div className="grid gap-2 sm:grid-cols-2">
++            {field.options.map((o) => {
++              const on = selected.includes(o);
++              return (
++                <label
++                  key={o}
++                  className={cn(
++                    "flex cursor-pointer items-center gap-3 rounded-lg border px-3 py-2.5 text-sm transition-colors",
++                    large && "py-3 text-[15px]",
++                    on ? "border-primary bg-primary/5" : "border-border bg-card hover:bg-muted/40"
++                  )}
++                >
++                  <input type="checkbox" checked={on} onChange={() => toggle(o)} className="h-4 w-4 accent-[hsl(var(--primary))]" />
++                  {o}
++                </label>
++              );
++            })}
++          </div>
++          {help}
++        </fieldset>
++      );
++    }
++
++    case "yesno": {
++      const v = (value as YesNoAnswer) ?? {};
++      const showDetails = field.detailsLabel && v.answer === (field.detailsWhen ?? "yes");
++      return (
++        <div className="space-y-2">
++          <p className={cn("text-sm font-semibold text-ink", large && "text-[15px]")}>
++            {field.label}
++            {field.required && <Required />}
++          </p>
++          <div className="flex gap-2" role="radiogroup" aria-label={field.label}>
++            {(["yes", "no"] as const).map((a) => {
++              const on = v.answer === a;
++              return (
++                <button
++                  key={a}
++                  type="button"
++                  role="radio"
++                  aria-checked={on}
++                  onClick={() => onChange({ ...v, answer: on ? undefined : a })}
++                  className={cn(
++                    "min-w-[80px] rounded-lg border px-4 py-2 text-sm font-medium capitalize transition-all",
++                    large && "min-w-[96px] py-2.5 text-[15px]",
++                    on ? "border-primary bg-primary text-primary-foreground" : "border-border bg-card hover:border-primary/40",
++                    invalid && !v.answer && "border-red-300"
++                  )}
++                >
++                  {a}
++                </button>
++              );
++            })}
++          </div>
++          {showDetails && (
++            <Textarea
++              rows={2}
++              aria-label={field.detailsLabel}
++              placeholder={field.detailsLabel}
++              value={v.details ?? ""}
++              onChange={(e) => onChange({ ...v, details: e.target.value })}
++              className={cn("rounded-lg bg-card", large && "text-base", invalid && !(v.details ?? "").trim() && "border-red-400 ring-4 ring-red-100")}
++            />
++          )}
++          {help}
++        </div>
++      );
++    }
++
++    case "vitals": {
++      const v = (value as Vitals) ?? {};
++      return (
++        <fieldset className="space-y-2">
++          <legend className="mb-1.5 text-sm font-semibold text-ink">{field.label}</legend>
++          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
++            {VITALS.map((m) => (
++              <label key={m.id} className="rounded-lg border border-border bg-card px-3 py-2">
++                <span className="block text-[11px] font-medium text-muted-foreground">{m.label}</span>
++                <span className="flex items-baseline gap-1">
++                  <input
++                    inputMode="decimal"
++                    value={v[m.id] ?? ""}
++                    onChange={(e) => onChange({ ...v, [m.id]: e.target.value.replace(/[^\d.,/]/g, "") })}
++                    className="tabular w-full bg-transparent text-base font-semibold text-ink outline-none"
++                    aria-label={`${m.label} (${m.unit})`}
++                  />
++                  <span className="text-[11px] text-muted-foreground">{m.unit}</span>
++                </span>
++              </label>
++            ))}
++          </div>
++        </fieldset>
++      );
++    }
++
++    case "rows": {
++      const rows = Array.isArray(value) && (value as Row[]).length ? (value as Row[]) : [{}];
++      const set = (i: number, col: string, val: string) => onChange(rows.map((r, j) => (j === i ? { ...r, [col]: val } : r)));
++      return (
++        <fieldset className="space-y-2">
++          <legend className="mb-1.5 text-sm font-semibold text-ink">
++            {field.label}
++            {field.required && <Required />}
++          </legend>
++          <div className={cn("space-y-2 rounded-xl border border-border bg-muted/30 p-3", invalid && "border-red-300")}>
++            {rows.map((r, i) => (
++              <div key={i} className="flex items-start gap-2">
++                <div className="grid flex-1 gap-2" style={{ gridTemplateColumns: `repeat(${Math.min(field.columns.length, 5)}, minmax(0, 1fr))` }}>
++                  {field.columns.map((c) => (
++                    <Input
++                      key={c.id}
++                      type={c.type === "date" ? "date" : "text"}
++                      aria-label={c.label}
++                      placeholder={c.placeholder ?? c.label}
++                      value={r[c.id] ?? ""}
++                      onChange={(e) => set(i, c.id, e.target.value)}
++                      className="h-9 text-sm"
++                      title={c.label}
++                    />
++                  ))}
++                </div>
++                <Button
++                  type="button"
++                  variant="ghost"
++                  size="icon"
++                  className="h-9 w-9 shrink-0 text-muted-foreground"
++                  aria-label="Remove row"
++                  disabled={rows.length === 1 && !Object.values(r).some(Boolean)}
++                  onClick={() => onChange(rows.length === 1 ? [] : rows.filter((_, j) => j !== i))}
++                >
++                  <Trash2 className="h-4 w-4" />
++                </Button>
++              </div>
++            ))}
++            <div className="flex items-center justify-between">
++              <p className="hidden text-[11px] text-muted-foreground sm:block">{field.columns.map((c) => c.label).join(" · ")}</p>
++              <Button type="button" variant="ghost" size="sm" className="gap-1.5 text-primary" onClick={() => onChange([...rows, {}])}>
++                <Plus className="h-4 w-4" /> {field.addLabel}
++              </Button>
++            </div>
++          </div>
++        </fieldset>
++      );
++    }
++  }
++}
++
++/** The template as a form to fill in. */
++export function FormFields({
++  template,
++  answers,
++  onChange,
++  invalidIds,
++  large,
++}: {
++  template: FormTemplate;
++  answers: Answers;
++  onChange: (next: Answers) => void;
++  /** Fields to highlight as still needed. */
++  invalidIds?: Set<string>;
++  /** Bigger targets, for clients filling in on a tablet or phone. */
++  large?: boolean;
++}) {
++  return (
++    <div className="space-y-8">
++      {template.sections.map((s) => (
++        <section key={s.id} className="space-y-5">
++          <div className="border-b border-border pb-2">
++            <h3 className={cn("text-base font-bold text-ink", large && "text-lg")}>{s.title}</h3>
++            {s.description && <p className="text-sm text-muted-foreground">{s.description}</p>}
++          </div>
++          {s.fields.map((f) => (
++            <div key={f.id} id={`field-${f.id}`}>
++              <FieldInput
++                field={f}
++                value={answers[f.id]}
++                onChange={(v) => onChange({ ...answers, [f.id]: v })}
++                invalid={invalidIds?.has(f.id)}
++                large={large}
++              />
++            </div>
++          ))}
++        </section>
++      ))}
++    </div>
++  );
++}
++
++/* -------------------------------------------------------------------- */
++/* Reading back                                                          */
++/* -------------------------------------------------------------------- */
++
++function formatDate(v: string) {
++  const d = new Date(v);
++  return isNaN(d.getTime()) ? v : format(d, "d MMM yyyy");
++}
++
++function AnswerView({ field, value }: { field: Field; value: AnswerValue }) {
++  switch (field.type) {
++    case "date":
++      return <>{formatDate(value as string)}</>;
++    case "checkboxes":
++      return <>{(value as string[]).join(", ")}</>;
++    case "yesno": {
++      const v = value as YesNoAnswer;
++      return (
++        <>
++          <span className={cn("font-semibold", v.answer === "yes" ? "text-ink" : "text-muted-foreground")}>
++            {v.answer === "yes" ? "Yes" : "No"}
++          </span>
++          {v.details && <span className="whitespace-pre-wrap">: {v.details}</span>}
++        </>
++      );
++    }
++    case "vitals": {
++      const v = value as Vitals;
++      return (
++        <span className="flex flex-wrap gap-x-5 gap-y-1">
++          {VITALS.filter((m) => v[m.id]).map((m) => (
++            <span key={m.id} className="tabular">
++              <span className="text-muted-foreground">{m.label}</span> {v[m.id]} {m.unit}
++            </span>
++          ))}
++        </span>
++      );
++    }
++    case "rows": {
++      const rows = (value as Row[]).filter((r) => Object.values(r).some((x) => String(x ?? "").trim()));
++      return (
++        <div className="mt-1 overflow-x-auto rounded-lg border border-border">
++          <table className="w-full text-left text-sm">
++            <thead className="bg-muted/50 text-xs text-muted-foreground">
++              <tr>
++                {field.columns.map((c) => (
++                  <th key={c.id} className="px-3 py-2 font-medium">{c.label}</th>
++                ))}
++              </tr>
++            </thead>
++            <tbody className="divide-y divide-border">
++              {rows.map((r, i) => (
++                <tr key={i}>
++                  {field.columns.map((c) => (
++                    <td key={c.id} className="px-3 py-2">{c.type === "date" && r[c.id] ? formatDate(r[c.id]) : r[c.id] || "–"}</td>
++                  ))}
++                </tr>
++              ))}
++            </tbody>
++          </table>
++        </div>
++      );
++    }
++    default:
++      return <span className="whitespace-pre-wrap">{String(value)}</span>;
++  }
++}
++
++/** A filled-in form, read-only. Only answered questions are shown. */
++export function FormView({ template, answers }: { template: FormTemplate; answers: Answers }) {
++  const sections = template.sections
++    .map((s) => ({ ...s, fields: s.fields.filter((f) => isAnswered(f, answers[f.id])) }))
++    .filter((s) => s.fields.length);
++
++  if (!sections.length) return <p className="text-sm text-muted-foreground">Nothing was filled in.</p>;
++
++  return (
++    <div className="space-y-6">
++      {sections.map((s) => (
++        <section key={s.id}>
++          <h4 className="mb-2 text-xs font-bold uppercase tracking-[0.06em] text-muted-foreground">{s.title}</h4>
++          <dl className="space-y-2.5">
++            {s.fields.map((f) => (
++              <div key={f.id} className={cn(f.type === "rows" || f.type === "vitals" ? "" : "grid gap-x-6 sm:grid-cols-[220px_1fr]")}>
++                <dt className="text-sm text-muted-foreground">{f.label}</dt>
++                <dd className="text-sm text-ink">
++                  <AnswerView field={f} value={answers[f.id]} />
++                </dd>
++              </div>
++            ))}
++          </dl>
++        </section>
++      ))}
++    </div>
++  );
++}
+diff --git a/src/components/intake/IntakeActions.tsx b/src/components/intake/IntakeActions.tsx
+new file mode 100644
+index 0000000..80f9a0e
+--- /dev/null
++++ b/src/components/intake/IntakeActions.tsx
+@@ -0,0 +1,150 @@
++import { useState } from "react";
++import { useNavigate } from "react-router-dom";
++import { toast } from "sonner";
++import { format } from "date-fns";
++import { Check, ClipboardList, Copy, Link2, Mail, MessageCircle, Tablet } from "lucide-react";
++import { Button } from "@/components/ui/button";
++import {
++  Dialog,
++  DialogContent,
++  DialogDescription,
++  DialogFooter,
++  DialogHeader,
++  DialogTitle,
++} from "@/components/ui/dialog";
++import {
++  DropdownMenu,
++  DropdownMenuContent,
++  DropdownMenuItem,
++  DropdownMenuLabel,
++  DropdownMenuSeparator,
++  DropdownMenuTrigger,
++} from "@/components/ui/dropdown-menu";
++import { usePractice } from "@/context/PracticeContext";
++import { templatesFor } from "@/lib/forms/templates";
++import type { FormTemplate } from "@/lib/forms/types";
++import { createIntakeLink } from "@/lib/db/clinical";
++
++/** "082 555 0142" → "27825550142" for WhatsApp links. */
++function waNumber(phone?: string | null) {
++  const digits = (phone ?? "").replace(/\D/g, "");
++  if (!digits) return "";
++  if (digits.startsWith("27")) return digits;
++  if (digits.startsWith("0")) return "27" + digits.slice(1);
++  return digits;
++}
++
++/**
++ * The two ways to get an intake form filled in: hand a practice device to
++ * the client now, or send them a link to do it before the visit.
++ */
++export function IntakeActions({
++  patient,
++  onSent,
++  size = "sm",
++}: {
++  patient: { id: string; name: string; email?: string | null; phone?: string | null };
++  onSent?: () => void;
++  size?: "sm" | "default";
++}) {
++  const navigate = useNavigate();
++  const { practice } = usePractice();
++  const [sent, setSent] = useState<{ template: FormTemplate; link: string; expiresAt: string } | null>(null);
++  const [copied, setCopied] = useState(false);
++  const options = templatesFor("intake", practice?.category);
++
++  const sendLink = async (template: FormTemplate) => {
++    try {
++      const { link, expiresAt } = await createIntakeLink(patient.id, template);
++      setSent({ template, link, expiresAt });
++      onSent?.();
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't create the link");
++    }
++  };
++
++  const first = patient.name.split(" ")[0];
++  const message = sent
++    ? `Hi ${first}, please fill in this short form for ${practice?.name} before your visit: ${sent.link} (it works until ${format(new Date(sent.expiresAt), "d MMMM")}).`
++    : "";
++
++  const menu = (label: string, icon: React.ReactNode, onPick: (t: FormTemplate) => void, title: string) => (
++    <DropdownMenu>
++      <DropdownMenuTrigger asChild>
++        <Button variant="outline" size={size} className="gap-1.5">
++          {icon} {label}
++        </Button>
++      </DropdownMenuTrigger>
++      <DropdownMenuContent align="start" className="w-72">
++        <DropdownMenuLabel>{title}</DropdownMenuLabel>
++        <DropdownMenuSeparator />
++        {options.map(({ template, suggested }) => (
++          <DropdownMenuItem key={template.key} onClick={() => onPick(template)} className="flex-col items-start gap-0.5">
++            <span className="font-medium">
++              {template.title}
++              {suggested && <span className="ml-2 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">Suggested</span>}
++            </span>
++            <span className="text-xs text-muted-foreground">{template.description}</span>
++          </DropdownMenuItem>
++        ))}
++      </DropdownMenuContent>
++    </DropdownMenu>
++  );
++
++  return (
++    <>
++      <div className="flex flex-wrap gap-2">
++        {menu("Fill in on this device", <Tablet className="h-4 w-4" />, (t) => navigate(`/patients/${patient.id}/intake/new?template=${t.key}`), `Hand the device to ${first}`)}
++        {menu("Send a form", <ClipboardList className="h-4 w-4" />, sendLink, `Send ${first} a link`)}
++      </div>
++
++      <Dialog open={!!sent} onOpenChange={(o) => !o && setSent(null)}>
++        <DialogContent className="sm:max-w-lg">
++          <DialogHeader>
++            <DialogTitle>Send "{sent?.template.title}" to {first}</DialogTitle>
++            <DialogDescription>
++              {first} fills it in on their phone; no login needed. The link works once, until{" "}
++              {sent && format(new Date(sent.expiresAt), "d MMMM yyyy")}.
++            </DialogDescription>
++          </DialogHeader>
++          <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 p-2">
++            <Link2 className="ml-1 h-4 w-4 shrink-0 text-muted-foreground" />
++            <input readOnly value={sent?.link ?? ""} onFocus={(e) => e.currentTarget.select()} className="min-w-0 flex-1 bg-transparent text-sm outline-none" aria-label="Form link" />
++            <Button
++              size="sm"
++              variant="outline"
++              className="shrink-0 gap-1.5"
++              onClick={async () => {
++                try {
++                  await navigator.clipboard.writeText(sent?.link ?? "");
++                  setCopied(true);
++                  setTimeout(() => setCopied(false), 2000);
++                } catch {
++                  toast.error("Couldn't copy. Select the link and copy it yourself.");
++                }
++              }}
++            >
++              {copied ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
++              {copied ? "Copied" : "Copy"}
++            </Button>
++          </div>
++          <div className="grid grid-cols-2 gap-2">
++            <Button asChild variant="outline" className="gap-2">
++              <a href={`https://wa.me/${waNumber(patient.phone)}?text=${encodeURIComponent(message)}`} target="_blank" rel="noreferrer">
++                <MessageCircle className="h-4 w-4" /> WhatsApp
++              </a>
++            </Button>
++            <Button asChild variant="outline" className="gap-2" disabled={!patient.email}>
++              <a href={`mailto:${patient.email ?? ""}?subject=${encodeURIComponent(`A form from ${practice?.name}`)}&body=${encodeURIComponent(message)}`}>
++                <Mail className="h-4 w-4" /> Email
++              </a>
++            </Button>
++          </div>
++          <DialogFooter>
++            <Button onClick={() => setSent(null)}>Done</Button>
++          </DialogFooter>
++        </DialogContent>
++      </Dialog>
++    </>
++  );
++}
+diff --git a/src/components/intake/IntakeFormFill.tsx b/src/components/intake/IntakeFormFill.tsx
+new file mode 100644
+index 0000000..2abcc0f
+--- /dev/null
++++ b/src/components/intake/IntakeFormFill.tsx
+@@ -0,0 +1,96 @@
++import { useEffect, useState } from "react";
++import { toast } from "sonner";
++import { ArrowRight, Loader2, ShieldCheck } from "lucide-react";
++import { Button } from "@/components/ui/button";
++import { Input } from "@/components/ui/input";
++import { Label } from "@/components/ui/label";
++import { FormFields } from "@/components/forms/FormRenderer";
++import { consentText as makeConsent } from "@/lib/forms/templates";
++import { missingRequired, type Answers, type FormTemplate } from "@/lib/forms/types";
++
++/**
++ * An intake form as the client sees it: the questions, then their consent
++ * and typed name. Used on a practice device and from an emailed/WhatsApp link.
++ */
++export function IntakeFormFill({
++  template,
++  practiceName,
++  defaultName,
++  onSubmit,
++}: {
++  template: FormTemplate;
++  practiceName: string;
++  defaultName?: string;
++  onSubmit: (answers: Answers, consentText: string, signedName: string) => Promise<void>;
++}) {
++  const [answers, setAnswers] = useState<Answers>({});
++  const [agreed, setAgreed] = useState(false);
++  const [name, setName] = useState(defaultName ?? "");
++  const [invalid, setInvalid] = useState<Set<string>>(new Set());
++  const [busy, setBusy] = useState(false);
++  const consent = makeConsent(template, practiceName);
++
++  // The member's name may arrive after the form opens.
++  useEffect(() => {
++    if (defaultName) setName((n) => n || defaultName);
++  }, [defaultName]);
++
++  const submit = async (e: React.FormEvent) => {
++    e.preventDefault();
++    const missing = missingRequired(template, answers);
++    if (missing.length) {
++      setInvalid(new Set(missing.map((f) => f.id)));
++      document.getElementById(`field-${missing[0].id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
++      toast.error(missing.length === 1 ? `Please answer: ${missing[0].label}` : `Please answer the ${missing.length} questions marked in red`);
++      return;
++    }
++    setInvalid(new Set());
++    if (!agreed) return toast.error("Please tick the box to agree");
++    if (name.trim().length < 2) return toast.error("Please type your full name");
++    setBusy(true);
++    try {
++      await onSubmit(answers, consent, name);
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't send the form");
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  return (
++    <form onSubmit={submit} className="space-y-10">
++      <FormFields
++        template={template}
++        answers={answers}
++        onChange={(next) => {
++          setAnswers(next);
++          if (invalid.size) {
++            const still = new Set(missingRequired(template, next).map((f) => f.id));
++            setInvalid(new Set([...invalid].filter((id) => still.has(id))));
++          }
++        }}
++        invalidIds={invalid}
++        large
++      />
++
++      <section className="space-y-4 rounded-2xl border border-border bg-muted/40 p-5">
++        <h3 className="flex items-center gap-2 text-lg font-bold text-ink">
++          <ShieldCheck className="h-5 w-5 text-primary" /> Your consent
++        </h3>
++        <p className="text-[15px] leading-relaxed text-ink/90">{consent}</p>
++        <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-card px-4 py-3 text-[15px]">
++          <input type="checkbox" checked={agreed} onChange={(e) => setAgreed(e.target.checked)} className="mt-1 h-5 w-5 accent-[hsl(var(--primary))]" />
++          I agree
++        </label>
++        <div className="space-y-1.5">
++          <Label htmlFor="signed-name" className="text-[15px] font-semibold text-ink">Type your full name to sign</Label>
++          <Input id="signed-name" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" className="h-12 text-base" />
++        </div>
++      </section>
++
++      <Button type="submit" disabled={busy} className="h-12 w-full text-base">
++        {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : <>Send to {practiceName} <ArrowRight className="h-5 w-5" /></>}
++      </Button>
++    </form>
++  );
++}
+diff --git a/src/components/intake/MemberHealthForms.tsx b/src/components/intake/MemberHealthForms.tsx
+new file mode 100644
+index 0000000..57b0109
+--- /dev/null
++++ b/src/components/intake/MemberHealthForms.tsx
+@@ -0,0 +1,87 @@
++import { useCallback, useEffect, useState } from "react";
++import { useNavigate } from "react-router-dom";
++import { format } from "date-fns";
++import { ArrowRight, CheckCircle2, Clock3, FileHeart, XCircle } from "lucide-react";
++import { Card } from "@/components/ui/card";
++import { Button } from "@/components/ui/button";
++import { IntakeActions } from "@/components/intake/IntakeActions";
++import { usePractice } from "@/context/PracticeContext";
++import { useModules } from "@/lib/modules";
++import { canSeeClinical } from "@/lib/roles";
++import { intakeOverview, type IntakeOverviewItem } from "@/lib/db/clinical";
++import { cn } from "@/lib/utils";
++
++const STATUS = {
++  completed: { icon: CheckCircle2, label: "Completed", tone: "text-emerald-700 bg-emerald-50" },
++  waiting: { icon: Clock3, label: "Waiting for them", tone: "text-amber-700 bg-amber-50" },
++  expired: { icon: XCircle, label: "Link expired", tone: "text-muted-foreground bg-muted" },
++  cancelled: { icon: XCircle, label: "Replaced", tone: "text-muted-foreground bg-muted" },
++} as const;
++
++/**
++ * In the member's profile: their intake forms (status only, no answers, so
++ * front desk can use it), ways to get one filled in, and, for practitioners
++ * and admins, the way into the clinical record.
++ */
++export function MemberHealthForms({
++  patient,
++}: {
++  patient: { id: string; name: string; email?: string | null; contact_number?: string | null };
++}) {
++  const navigate = useNavigate();
++  const { practice } = usePractice();
++  const { hasClinical } = useModules();
++  const [items, setItems] = useState<IntakeOverviewItem[]>([]);
++  const clinical = canSeeClinical(practice?.role);
++
++  const load = useCallback(() => {
++    intakeOverview(patient.id).then(setItems).catch(() => setItems([]));
++  }, [patient.id]);
++
++  useEffect(() => {
++    if (hasClinical) load();
++  }, [hasClinical, load]);
++
++  if (!hasClinical) return null;
++
++  return (
++    <Card className="p-6">
++      <div className="flex flex-wrap items-start justify-between gap-3">
++        <div>
++          <h3 className="text-lg font-semibold text-ink">Health forms{clinical ? " and clinical record" : ""}</h3>
++          <p className="text-sm text-muted-foreground">
++            {clinical ? "Answers are in the clinical record." : "Only practitioners and admins can read the answers."}
++          </p>
++        </div>
++        {clinical && (
++          <Button className="gap-2" onClick={() => navigate(`/patients/${patient.id}/record`)}>
++            <FileHeart className="h-4 w-4" /> Open clinical record <ArrowRight className="h-4 w-4" />
++          </Button>
++        )}
++      </div>
++
++      {items.length > 0 && (
++        <ul className="mt-4 divide-y divide-border rounded-lg border border-border">
++          {items.slice(0, 6).map((i) => {
++            const s = STATUS[i.status];
++            return (
++              <li key={`${i.kind}-${i.id}`} className="flex items-center gap-3 px-4 py-2.5 text-sm">
++                <span className="min-w-0 flex-1 truncate font-medium text-ink">{i.title}</span>
++                <span className="text-xs text-muted-foreground">
++                  {i.status === "completed" ? format(new Date(i.at), "d MMM yyyy") : i.status === "waiting" && i.expiresAt ? `sent ${format(new Date(i.at), "d MMM")}` : ""}
++                </span>
++                <span className={cn("flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold", s.tone)}>
++                  <s.icon className="h-3.5 w-3.5" /> {s.label}
++                </span>
++              </li>
++            );
++          })}
++        </ul>
++      )}
++
++      <div className="mt-4">
++        <IntakeActions patient={{ id: patient.id, name: patient.name, email: patient.email, phone: patient.contact_number }} onSent={load} />
++      </div>
++    </Card>
++  );
++}
+diff --git a/src/lib/db/clinical.ts b/src/lib/db/clinical.ts
+new file mode 100644
+index 0000000..8fc4cab
+--- /dev/null
++++ b/src/lib/db/clinical.ts
+@@ -0,0 +1,285 @@
++import { supabase } from "@/config/supabase";
++import type { Answers, FormTemplate } from "@/lib/forms/types";
++
++function fail(error: { message: string } | null) {
++  if (error) throw new Error(error.message);
++}
++
++type Person = { full_name: string | null; email: string | null } | null;
++const personName = (p: Person) => p?.full_name || p?.email || "Someone";
++
++/* -------------------------------------------------------------------- */
++/* Clinical notes                                                        */
++/* -------------------------------------------------------------------- */
++
++export interface NoteSummary {
++  id: string;
++  title: string;
++  status: "draft" | "signed";
++  createdAt: string;
++  signedAt: string | null;
++  authorId: string;
++  authorName: string;
++  addendaCount: number;
++}
++
++export interface Addendum {
++  id: string;
++  reason: string;
++  body: string;
++  createdAt: string;
++  authorName: string;
++}
++
++export interface Note extends NoteSummary {
++  patientId: string;
++  practiceId: string;
++  template: FormTemplate;
++  answers: Answers;
++  signedByName: string | null;
++  addenda: Addendum[];
++}
++
++export async function listNotes(patientId: string): Promise<NoteSummary[]> {
++  const { data, error } = await supabase
++    .from("clinical_notes")
++    .select(
++      "id, title, status, created_at, signed_at, author_id, author:profiles!clinical_notes_author_id_fkey(full_name, email), clinical_note_addenda(count)"
++    )
++    .eq("patient_id", patientId)
++    .order("created_at", { ascending: false });
++  fail(error);
++  type Row = {
++    id: string; title: string; status: "draft" | "signed"; created_at: string; signed_at: string | null;
++    author_id: string; author: Person; clinical_note_addenda: { count: number }[];
++  };
++  return ((data ?? []) as unknown as Row[]).map((r) => ({
++    id: r.id,
++    title: r.title,
++    status: r.status,
++    createdAt: r.created_at,
++    signedAt: r.signed_at,
++    authorId: r.author_id,
++    authorName: personName(r.author),
++    addendaCount: r.clinical_note_addenda?.[0]?.count ?? 0,
++  }));
++}
++
++export async function getNote(noteId: string): Promise<Note> {
++  const { data, error } = await supabase
++    .from("clinical_notes")
++    .select(
++      `id, practice_id, patient_id, title, status, created_at, signed_at, author_id, template, answers,
++       author:profiles!clinical_notes_author_id_fkey(full_name, email),
++       signer:profiles!clinical_notes_signed_by_fkey(full_name, email),
++       clinical_note_addenda(id, reason, body, created_at, author:profiles(full_name, email))`
++    )
++    .eq("id", noteId)
++    .single();
++  fail(error);
++  type Row = {
++    id: string; practice_id: string; patient_id: string; title: string; status: "draft" | "signed"; created_at: string;
++    signed_at: string | null; author_id: string; template: FormTemplate; answers: Answers; author: Person; signer: Person;
++    clinical_note_addenda: { id: string; reason: string; body: string; created_at: string; author: Person }[];
++  };
++  const r = data as unknown as Row;
++  const addenda = [...(r.clinical_note_addenda ?? [])]
++    .sort((a, b) => a.created_at.localeCompare(b.created_at))
++    .map((a) => ({ id: a.id, reason: a.reason, body: a.body, createdAt: a.created_at, authorName: personName(a.author) }));
++  return {
++    id: r.id,
++    practiceId: r.practice_id,
++    patientId: r.patient_id,
++    title: r.title,
++    status: r.status,
++    createdAt: r.created_at,
++    signedAt: r.signed_at,
++    authorId: r.author_id,
++    authorName: personName(r.author),
++    signedByName: r.signer ? personName(r.signer) : null,
++    template: r.template,
++    answers: r.answers ?? {},
++    addenda,
++    addendaCount: addenda.length,
++  };
++}
++
++/** Start a note (as a draft, or signed straight away). Returns its id. */
++export async function createNote(
++  practiceId: string,
++  patientId: string,
++  template: FormTemplate,
++  answers: Answers,
++  sign = false
++): Promise<string> {
++  const { data: u } = await supabase.auth.getUser();
++  const { data, error } = await supabase
++    .from("clinical_notes")
++    .insert({
++      practice_id: practiceId,
++      patient_id: patientId,
++      author_id: u.user?.id,
++      template_key: template.key,
++      template_version: template.version,
++      template,
++      title: template.title,
++      answers,
++      status: sign ? "signed" : "draft",
++    })
++    .select("id")
++    .single();
++  fail(error);
++  return (data as { id: string }).id;
++}
++
++export async function saveDraft(noteId: string, answers: Answers) {
++  const { error } = await supabase.from("clinical_notes").update({ answers }).eq("id", noteId);
++  fail(error);
++}
++
++export async function signNote(noteId: string, answers: Answers) {
++  const { error } = await supabase.from("clinical_notes").update({ answers, status: "signed" }).eq("id", noteId);
++  fail(error);
++}
++
++export async function deleteDraft(noteId: string) {
++  const { error } = await supabase.from("clinical_notes").delete().eq("id", noteId);
++  fail(error);
++}
++
++export async function addAddendum(noteId: string, reason: string, body: string) {
++  const { data: u } = await supabase.auth.getUser();
++  const { error } = await supabase
++    .from("clinical_note_addenda")
++    .insert({ note_id: noteId, author_id: u.user?.id, reason: reason.trim(), body: body.trim() });
++  fail(error);
++}
++
++/* -------------------------------------------------------------------- */
++/* Intake forms                                                          */
++/* -------------------------------------------------------------------- */
++
++export interface IntakeSubmission {
++  id: string;
++  title: string;
++  template: FormTemplate;
++  answers: Answers;
++  submittedAt: string;
++  source: "in_practice" | "link";
++  signedName: string;
++  consentText: string;
++  collectedByName: string | null;
++}
++
++/** Full submissions with answers (practitioners and admins only). */
++export async function listIntakeSubmissions(patientId: string): Promise<IntakeSubmission[]> {
++  const { data, error } = await supabase
++    .from("intake_submissions")
++    .select("id, title, template, answers, submitted_at, source, signed_name, consent_text, collector:profiles(full_name, email)")
++    .eq("patient_id", patientId)
++    .order("submitted_at", { ascending: false });
++  fail(error);
++  type Row = {
++    id: string; title: string; template: FormTemplate; answers: Answers; submitted_at: string;
++    source: "in_practice" | "link"; signed_name: string; consent_text: string; collector: Person;
++  };
++  return ((data ?? []) as unknown as Row[]).map((r) => ({
++    id: r.id,
++    title: r.title,
++    template: r.template,
++    answers: r.answers ?? {},
++    submittedAt: r.submitted_at,
++    source: r.source,
++    signedName: r.signed_name,
++    consentText: r.consent_text,
++    collectedByName: r.collector ? personName(r.collector) : null,
++  }));
++}
++
++export interface IntakeOverviewItem {
++  kind: "submission" | "link";
++  id: string;
++  templateKey: string;
++  title: string;
++  at: string;
++  source: string;
++  status: "completed" | "waiting" | "expired" | "cancelled";
++  expiresAt: string | null;
++}
++
++/** Which forms a member has completed or been sent, without the answers (any team member). */
++export async function intakeOverview(patientId: string): Promise<IntakeOverviewItem[]> {
++  const { data, error } = await supabase.rpc("intake_overview", { p_patient: patientId });
++  fail(error);
++  type Row = { kind: "submission" | "link"; id: string; template_key: string; title: string; at: string; source: string; status: IntakeOverviewItem["status"]; expires_at: string | null };
++  return ((data ?? []) as Row[]).map((r) => ({
++    kind: r.kind, id: r.id, templateKey: r.template_key, title: r.title, at: r.at, source: r.source, status: r.status, expiresAt: r.expires_at,
++  }));
++}
++
++/** The client filled it in on a practice device. */
++export async function submitIntakeInPractice(
++  practiceId: string,
++  patientId: string,
++  template: FormTemplate,
++  answers: Answers,
++  consentText: string,
++  signedName: string
++) {
++  const { data: u } = await supabase.auth.getUser();
++  const { error } = await supabase.from("intake_submissions").insert({
++    practice_id: practiceId,
++    patient_id: patientId,
++    template_key: template.key,
++    template_version: template.version,
++    template,
++    title: template.title,
++    answers,
++    consent_given: true,
++    consent_text: consentText,
++    signed_name: signedName.trim(),
++    source: "in_practice",
++    collected_by: u.user?.id,
++  });
++  fail(error);
++}
++
++export async function createIntakeLink(patientId: string, template: FormTemplate) {
++  const { data, error } = await supabase.rpc("create_intake_link", {
++    p_patient: patientId,
++    p_template_key: template.key,
++    p_title: template.title,
++  });
++  fail(error);
++  const row = (Array.isArray(data) ? data[0] : data) as { token: string; expires_at: string };
++  return { link: `${window.location.origin}/intake/${row.token}`, expiresAt: row.expires_at };
++}
++
++export interface IntakeLinkInfo {
++  status: "pending" | "completed" | "expired" | "cancelled" | "invalid";
++  template_key?: string;
++  title?: string;
++  first_name?: string | null;
++  practice_name?: string;
++  logo_url?: string | null;
++  brand_primary_color?: string | null;
++  brand_accent_color?: string | null;
++  expires_at?: string;
++}
++
++export async function getIntakeLink(token: string): Promise<IntakeLinkInfo> {
++  const { data, error } = await supabase.rpc("get_intake_link", { p_token: token });
++  fail(error);
++  return (data ?? { status: "invalid" }) as IntakeLinkInfo;
++}
++
++export async function submitIntakeLink(token: string, template: FormTemplate, answers: Answers, consentText: string, signedName: string) {
++  const { error } = await supabase.rpc("submit_intake_link", {
++    p_token: token,
++    p_template: template,
++    p_answers: answers,
++    p_consent_text: consentText,
++    p_signed_name: signedName.trim(),
++  });
++  fail(error);
++}
+diff --git a/src/lib/forms/templates.ts b/src/lib/forms/templates.ts
+new file mode 100644
+index 0000000..3286015
+--- /dev/null
++++ b/src/lib/forms/templates.ts
+@@ -0,0 +1,384 @@
++import type { FormTemplate } from "./types";
++
++/**
++ * The templates Care Africa provides. These are starting points, to be
++ * checked against founding practices' own paper forms and the HPCSA's
++ * record-keeping guidance (Booklet 9) before go-live.
++ *
++ * To change a template: copy it, raise `version`, and edit the copy.
++ * Records keep the version they were filled in on.
++ */
++
++const PREGNANCY = ["No", "Yes, pregnant", "Breastfeeding", "Trying to fall pregnant", "Not sure", "Not applicable"];
++
++const DEFAULT_CONSENT =
++  "I confirm that the information I've given is true and complete, as far as I know. I agree that {practice} may keep " +
++  "and use it to give me safe care. It will be kept confidential and only shared with the people caring for me, " +
++  "or where the law requires it. I'll tell the practice if anything changes.";
++
++/* -------------------------------------------------------------------- */
++/* Clinical notes                                                        */
++/* -------------------------------------------------------------------- */
++
++export const SOAP_CONSULTATION: FormTemplate = {
++  key: "soap_consultation",
++  version: 1,
++  kind: "clinical_note",
++  title: "General consultation",
++  description: "A standard consultation note: what the patient says, what you find, your assessment and the plan (SOAP).",
++  suggestedFor: [],
++  sections: [
++    {
++      id: "subjective",
++      title: "Subjective",
++      description: "What the patient tells you.",
++      fields: [
++        { id: "complaint", type: "text", label: "Reason for visit", required: true, placeholder: "e.g. Lower back pain for 2 weeks" },
++        { id: "history", type: "textarea", label: "History of the complaint", rows: 4 },
++        { id: "current_medication", type: "textarea", label: "Current medicines", rows: 2 },
++        { id: "allergies", type: "yesno", label: "Allergies?", detailsLabel: "Allergic to what, and what happens?" },
++      ],
++    },
++    {
++      id: "objective",
++      title: "Objective",
++      description: "What you observe and measure.",
++      fields: [
++        { id: "vitals", type: "vitals", label: "Vitals" },
++        { id: "examination", type: "textarea", label: "Examination findings", rows: 5 },
++      ],
++    },
++    {
++      id: "assessment",
++      title: "Assessment",
++      fields: [
++        { id: "assessment", type: "textarea", label: "Assessment or diagnosis", required: true, rows: 3 },
++        { id: "icd10", type: "text", label: "ICD-10 code(s)", help: "Needed for medical-aid claims.", placeholder: "e.g. M54.5" },
++      ],
++    },
++    {
++      id: "plan",
++      title: "Plan",
++      fields: [
++        { id: "plan", type: "textarea", label: "Treatment and plan", required: true, rows: 4 },
++        {
++          id: "medicines",
++          type: "rows",
++          label: "Medicines prescribed or given",
++          addLabel: "Add a medicine",
++          columns: [
++            { id: "medicine", label: "Medicine and strength", placeholder: "e.g. Ibuprofen 400 mg" },
++            { id: "dose", label: "Dose and how often", placeholder: "e.g. 1 tablet 3 times a day" },
++            { id: "duration", label: "For how long", placeholder: "e.g. 5 days" },
++            { id: "quantity", label: "Quantity", placeholder: "e.g. 15" },
++          ],
++        },
++        { id: "advice", type: "textarea", label: "Advice given to the patient", rows: 2 },
++        { id: "referral", type: "text", label: "Referred to" },
++        { id: "follow_up", type: "date", label: "Follow-up date" },
++      ],
++    },
++  ],
++};
++
++export const TREATMENT_RECORD: FormTemplate = {
++  key: "treatment_record",
++  version: 1,
++  kind: "clinical_note",
++  title: "Treatment record (aesthetics / IV)",
++  description: "For injectables, fillers, skin treatments and IV infusions: consent, products and batch numbers, vitals before and after, and any reaction.",
++  suggestedFor: ["aesthetics", "iv_therapy", "nurse_clinic"],
++  sections: [
++    {
++      id: "before",
++      title: "Before treatment",
++      fields: [
++        {
++          id: "treatment",
++          type: "select",
++          label: "Treatment",
++          required: true,
++          options: ["IV infusion", "Vitamin injection", "Botulinum toxin", "Dermal filler", "Skin treatment or peel", "Other"],
++        },
++        { id: "protocol", type: "text", label: "Protocol or treatment name", placeholder: "e.g. Hydration drip with vitamin C" },
++        { id: "intake_reviewed", type: "yesno", label: "Intake form reviewed and contraindications checked?", required: true, detailsLabel: "Why not?", detailsWhen: "no" },
++        { id: "consent", type: "yesno", label: "Written consent obtained for this treatment?", required: true, detailsLabel: "Why not?", detailsWhen: "no" },
++        { id: "prescriber", type: "text", label: "Prescribed or authorised by", help: "Name and registration number.", required: true },
++        { id: "vitals_before", type: "vitals", label: "Vitals before" },
++      ],
++    },
++    {
++      id: "products",
++      title: "Products used",
++      fields: [
++        {
++          id: "products",
++          type: "rows",
++          label: "Products",
++          required: true,
++          addLabel: "Add a product",
++          columns: [
++            { id: "product", label: "Product", placeholder: "e.g. Sodium chloride 0.9%" },
++            { id: "batch", label: "Batch / lot no." },
++            { id: "expiry", label: "Expiry", type: "date" },
++            { id: "amount", label: "Dose or volume", placeholder: "e.g. 1000 ml / 20 units" },
++            { id: "site", label: "Route or site", placeholder: "e.g. IV left forearm" },
++          ],
++        },
++      ],
++    },
++    {
++      id: "procedure",
++      title: "Procedure",
++      fields: [
++        { id: "access", type: "text", label: "Cannula size and site", help: "For IV treatments.", placeholder: "e.g. 22G left antecubital" },
++        { id: "start_time", type: "time", label: "Start time" },
++        { id: "end_time", type: "time", label: "End time" },
++        { id: "procedure_notes", type: "textarea", label: "Procedure notes", rows: 3 },
++      ],
++    },
++    {
++      id: "after",
++      title: "After treatment",
++      fields: [
++        { id: "vitals_after", type: "vitals", label: "Vitals after" },
++        { id: "reaction", type: "yesno", label: "Any adverse reaction?", required: true, detailsLabel: "What happened, and what was done?" },
++        { id: "aftercare", type: "textarea", label: "Aftercare advice given", rows: 2 },
++        { id: "follow_up", type: "date", label: "Follow-up date" },
++      ],
++    },
++  ],
++};
++
++/* -------------------------------------------------------------------- */
++/* Intake forms (filled in by the client)                                */
++/* -------------------------------------------------------------------- */
++
++export const GENERAL_HEALTH: FormTemplate = {
++  key: "general_health",
++  version: 1,
++  kind: "intake",
++  title: "Health questionnaire",
++  description: "General health, medicines and allergies, before a first visit.",
++  suggestedFor: [],
++  consent: DEFAULT_CONSENT,
++  sections: [
++    {
++      id: "conditions",
++      title: "Your health",
++      fields: [
++        {
++          id: "conditions",
++          type: "checkboxes",
++          label: "Do you have, or have you had, any of these?",
++          noneOption: "None of these",
++          options: [
++            "Diabetes",
++            "High blood pressure",
++            "Heart condition",
++            "Asthma or lung condition",
++            "Epilepsy or seizures",
++            "Bleeding or clotting problem",
++            "Kidney or liver disease",
++            "Cancer (now or in the past)",
++            "HIV",
++            "Mental health condition",
++            "None of these",
++          ],
++        },
++        { id: "other_conditions", type: "textarea", label: "Any other conditions, or operations in the last few years?", rows: 2 },
++      ],
++    },
++    {
++      id: "medicines",
++      title: "Medicines and allergies",
++      fields: [
++        { id: "medicines", type: "yesno", label: "Do you take any medicines, supplements or herbal remedies?", required: true, detailsLabel: "Which ones?" },
++        { id: "allergies", type: "yesno", label: "Are you allergic to anything (medicines, latex, plasters, foods)?", required: true, detailsLabel: "To what, and what happens?" },
++        { id: "pregnancy", type: "select", label: "Are you pregnant or breastfeeding?", options: PREGNANCY },
++        { id: "smoking", type: "select", label: "Do you smoke?", options: ["Never", "I used to", "Yes"] },
++      ],
++    },
++    {
++      id: "contact",
++      title: "Contacts",
++      fields: [
++        { id: "emergency_contact", type: "text", label: "Emergency contact (name and phone number)", required: true },
++        { id: "doctor", type: "text", label: "Your usual doctor (optional)" },
++        { id: "anything_else", type: "textarea", label: "Anything else we should know?", rows: 2 },
++      ],
++    },
++  ],
++};
++
++export const MASSAGE_SPA: FormTemplate = {
++  key: "massage_spa",
++  version: 1,
++  kind: "intake",
++  title: "Massage and spa health check",
++  description: "Quick health check before a massage or spa treatment.",
++  suggestedFor: ["wellness", "beauty", "physio", "chiro", "biokinetics"],
++  consent: DEFAULT_CONSENT,
++  sections: [
++    {
++      id: "health",
++      title: "Your health",
++      fields: [
++        {
++          id: "conditions",
++          type: "checkboxes",
++          label: "Do any of these apply to you right now?",
++          noneOption: "None of these",
++          options: [
++            "Injury or operation in the last 3 months",
++            "Blood clots or DVT",
++            "Varicose veins",
++            "Heart condition",
++            "High or low blood pressure",
++            "Skin condition, rash or open wound",
++            "Diabetes",
++            "Epilepsy",
++            "Pregnant",
++            "Having cancer treatment",
++            "Fever or feeling unwell",
++            "None of these",
++          ],
++        },
++        { id: "medicines", type: "yesno", label: "Are you taking any medicines (including blood thinners)?", required: true, detailsLabel: "Which ones?" },
++        { id: "allergies", type: "yesno", label: "Are you allergic to any oils, nuts, fragrances or skin products?", required: true, detailsLabel: "To what?" },
++      ],
++    },
++    {
++      id: "preferences",
++      title: "Your treatment",
++      fields: [
++        { id: "pain", type: "textarea", label: "Any areas of pain or tension we should know about?", rows: 2 },
++        { id: "avoid", type: "text", label: "Any areas you'd like us to avoid?" },
++        { id: "pressure", type: "select", label: "Preferred pressure", options: ["Light", "Medium", "Firm", "Not sure"] },
++      ],
++    },
++  ],
++};
++
++export const SKIN_BEAUTY: FormTemplate = {
++  key: "skin_beauty",
++  version: 1,
++  kind: "intake",
++  title: "Skin and beauty consultation",
++  description: "Skin type, products and sensitivities before facials, peels and beauty treatments.",
++  suggestedFor: ["beauty", "aesthetics"],
++  consent: DEFAULT_CONSENT,
++  sections: [
++    {
++      id: "skin",
++      title: "Your skin",
++      fields: [
++        { id: "skin_type", type: "select", label: "How would you describe your skin?", options: ["Normal", "Dry", "Oily", "Combination", "Sensitive", "Not sure"] },
++        {
++          id: "concerns",
++          type: "checkboxes",
++          label: "What would you like help with?",
++          options: ["Acne or breakouts", "Pigmentation or dark marks", "Fine lines", "Redness or rosacea", "Dryness", "Sensitivity", "Other"],
++        },
++        { id: "products", type: "textarea", label: "What do you use on your skin now?", rows: 2 },
++      ],
++    },
++    {
++      id: "safety",
++      title: "Safety",
++      fields: [
++        {
++          id: "actives",
++          type: "yesno",
++          label: "In the last 6 months, have you used retinol, Retin-A, Roaccutane or had a chemical peel?",
++          required: true,
++          detailsLabel: "Which, and when?",
++        },
++        { id: "allergies", type: "yesno", label: "Are you allergic to any products, latex or hair dye?", required: true, detailsLabel: "To what?" },
++        { id: "past_reaction", type: "yesno", label: "Have you ever reacted to a beauty treatment?", detailsLabel: "What happened?" },
++        { id: "sun", type: "select", label: "Sunburn, tanning or sunbeds in the last 2 weeks?", options: ["No", "Yes"] },
++        { id: "pregnancy", type: "select", label: "Are you pregnant or breastfeeding?", options: PREGNANCY },
++      ],
++    },
++  ],
++};
++
++export const AESTHETICS_IV_PRETREATMENT: FormTemplate = {
++  key: "iv_pretreatment",
++  version: 1,
++  kind: "intake",
++  title: "Before your treatment (aesthetics / IV)",
++  description: "Medical history and safety questions before injectables, fillers or an IV drip.",
++  suggestedFor: ["aesthetics", "iv_therapy", "nurse_clinic"],
++  consent: DEFAULT_CONSENT,
++  sections: [
++    {
++      id: "treatment",
++      title: "Your treatment",
++      fields: [
++        { id: "reason", type: "text", label: "What would you like to have done?", required: true },
++        { id: "before", type: "yesno", label: "Have you had this or a similar treatment before?", detailsLabel: "When, and how did it go?" },
++      ],
++    },
++    {
++      id: "health",
++      title: "Your health",
++      fields: [
++        {
++          id: "conditions",
++          type: "checkboxes",
++          label: "Do you have any of these?",
++          noneOption: "None of these",
++          options: [
++            "Heart condition",
++            "High blood pressure",
++            "Kidney disease",
++            "Liver disease",
++            "Diabetes",
++            "Bleeding disorder, or taking blood thinners",
++            "Autoimmune condition",
++            "G6PD deficiency",
++            "Nerve or muscle condition (e.g. myasthenia gravis)",
++            "Cold sores",
++            "Keloid or raised scars",
++            "None of these",
++          ],
++        },
++        { id: "medicines", type: "yesno", label: "Do you take any medicines, supplements or herbal remedies?", required: true, detailsLabel: "Which ones?" },
++        { id: "allergies", type: "yesno", label: "Are you allergic to anything (medicines, latex, eggs, plasters)?", required: true, detailsLabel: "To what, and what happens?" },
++        { id: "bad_reaction", type: "yesno", label: "Have you ever reacted badly to an injection, drip or anaesthetic?", required: true, detailsLabel: "What happened?" },
++        { id: "pregnancy", type: "select", label: "Are you pregnant or breastfeeding?", options: PREGNANCY, required: true },
++        { id: "eaten", type: "select", label: "Have you eaten in the last 4 hours?", options: ["Yes", "No"] },
++      ],
++    },
++    {
++      id: "contact",
++      title: "Contacts",
++      fields: [{ id: "emergency_contact", type: "text", label: "Emergency contact (name and phone number)", required: true }],
++    },
++  ],
++};
++
++export const TEMPLATES: FormTemplate[] = [
++  SOAP_CONSULTATION,
++  TREATMENT_RECORD,
++  GENERAL_HEALTH,
++  MASSAGE_SPA,
++  SKIN_BEAUTY,
++  AESTHETICS_IV_PRETREATMENT,
++];
++
++export function getTemplate(key: string): FormTemplate | undefined {
++  return TEMPLATES.find((t) => t.key === key);
++}
++
++/** Templates of one kind, the ones suggested for this practice type first. */
++export function templatesFor(kind: FormTemplate["kind"], practiceType?: string | null) {
++  const list = TEMPLATES.filter((t) => t.kind === kind);
++  const suits = (t: FormTemplate) => !!practiceType && t.suggestedFor.includes(practiceType);
++  return [...list.filter(suits), ...list.filter((t) => !suits(t))].map((t) => ({ template: t, suggested: suits(t) }));
++}
++
++export function consentText(template: FormTemplate, practiceName: string) {
++  return (template.consent ?? DEFAULT_CONSENT).replace(/\{practice\}/g, practiceName);
++}
+diff --git a/src/lib/forms/types.ts b/src/lib/forms/types.ts
+new file mode 100644
+index 0000000..1f1b10e
+--- /dev/null
++++ b/src/lib/forms/types.ts
+@@ -0,0 +1,99 @@
++/**
++ * Care Africa form templates: one format for clinical notes and intake
++ * forms. A record keeps a copy of the template it was filled in on
++ * (migration 0010), so a template can be improved later (new version)
++ * without changing what earlier records asked.
++ */
++
++interface FieldBase {
++  id: string;
++  label: string;
++  help?: string;
++  required?: boolean;
++}
++
++export type Field =
++  | (FieldBase & { type: "text"; placeholder?: string })
++  | (FieldBase & { type: "textarea"; placeholder?: string; rows?: number })
++  | (FieldBase & { type: "number"; unit?: string; min?: number; max?: number; step?: number })
++  | (FieldBase & { type: "date" })
++  | (FieldBase & { type: "time" })
++  | (FieldBase & { type: "select"; options: string[] })
++  | (FieldBase & { type: "checkboxes"; options: string[]; noneOption?: string })
++  | (FieldBase & { type: "yesno"; detailsLabel?: string; detailsWhen?: "yes" | "no" })
++  | (FieldBase & { type: "vitals" })
++  | (FieldBase & { type: "rows"; columns: { id: string; label: string; type?: "text" | "date" | "number"; placeholder?: string }[]; addLabel: string });
++
++export interface Section {
++  id: string;
++  title: string;
++  description?: string;
++  fields: Field[];
++}
++
++export interface FormTemplate {
++  key: string;
++  version: number;
++  kind: "clinical_note" | "intake";
++  title: string;
++  description: string;
++  /** Practice type ids (src/lib/practiceTypes.ts) this suits best. Empty = everyone. */
++  suggestedFor: string[];
++  sections: Section[];
++  /** Intake forms: what the client agrees to. "{practice}" is replaced with the practice name. */
++  consent?: string;
++}
++
++/* Answer shapes, by field type */
++export type YesNoAnswer = { answer?: "yes" | "no"; details?: string };
++export type Vitals = Partial<
++  Record<"bp_systolic" | "bp_diastolic" | "pulse" | "temperature" | "resp_rate" | "spo2" | "glucose" | "weight" | "height", string>
++>;
++export type Row = Record<string, string>;
++export type AnswerValue = string | string[] | YesNoAnswer | Vitals | Row[] | undefined;
++export type Answers = Record<string, AnswerValue>;
++
++export const VITALS: { id: keyof Vitals; label: string; unit: string }[] = [
++  { id: "bp_systolic", label: "BP systolic", unit: "mmHg" },
++  { id: "bp_diastolic", label: "BP diastolic", unit: "mmHg" },
++  { id: "pulse", label: "Pulse", unit: "bpm" },
++  { id: "temperature", label: "Temperature", unit: "°C" },
++  { id: "resp_rate", label: "Breathing rate", unit: "/min" },
++  { id: "spo2", label: "Oxygen saturation", unit: "%" },
++  { id: "glucose", label: "Blood glucose", unit: "mmol/L" },
++  { id: "weight", label: "Weight", unit: "kg" },
++  { id: "height", label: "Height", unit: "cm" },
++];
++
++/** Is this answer filled in? */
++export function isAnswered(field: Field, value: AnswerValue): boolean {
++  if (value === undefined || value === null) return false;
++  switch (field.type) {
++    case "checkboxes":
++      return Array.isArray(value) && value.length > 0;
++    case "yesno":
++      return !!(value as YesNoAnswer).answer;
++    case "vitals":
++      return Object.values((value as Vitals) ?? {}).some((v) => v !== undefined && String(v).trim() !== "");
++    case "rows":
++      return Array.isArray(value) && (value as Row[]).some((r) => Object.values(r).some((v) => String(v ?? "").trim() !== ""));
++    default:
++      return String(value).trim() !== "";
++  }
++}
++
++/** Required fields that are still empty. */
++export function missingRequired(template: FormTemplate, answers: Answers): Field[] {
++  const missing: Field[] = [];
++  for (const s of template.sections) {
++    for (const f of s.fields) {
++      if (f.required && !isAnswered(f, answers[f.id])) missing.push(f);
++      // "Yes, and tell us more": details are needed when the answer calls for them.
++      if (f.type === "yesno" && f.detailsLabel) {
++        const v = answers[f.id] as YesNoAnswer | undefined;
++        if (v?.answer === (f.detailsWhen ?? "yes") && !(v.details ?? "").trim()) missing.push({ ...f, label: f.detailsLabel });
++      }
++    }
++  }
++  return missing;
++}
+diff --git a/src/lib/modules.ts b/src/lib/modules.ts
+index 6611dd3..ad0f6c7 100644
+--- a/src/lib/modules.ts
++++ b/src/lib/modules.ts
+@@ -45,8 +45,8 @@ export function clinicalAllowed(plan: Plan, level: ClinicalLevel): boolean {
+  * Flip these as each part is released.
+  */
+ export const MODULE_RELEASED = {
+-  intake: false,
+-  clinicalNotes: false,
++  intake: true,
++  clinicalNotes: true,
+   claims: false,
+ } as const;
+ 
+diff --git a/src/pages/ClinicalNote.tsx b/src/pages/ClinicalNote.tsx
+new file mode 100644
+index 0000000..b6f497e
+--- /dev/null
++++ b/src/pages/ClinicalNote.tsx
+@@ -0,0 +1,346 @@
++import { useCallback, useEffect, useRef, useState } from "react";
++import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
++import { toast } from "sonner";
++import { format } from "date-fns";
++import { ArrowLeft, Check, Loader2, Lock, PenLine, Printer, Trash2 } from "lucide-react";
++import { DashboardLayout } from "@/components/Dashboard/DashboardLayout";
++import { Card } from "@/components/ui/card";
++import { Button } from "@/components/ui/button";
++import { Label } from "@/components/ui/label";
++import { Input } from "@/components/ui/input";
++import { Textarea } from "@/components/ui/textarea";
++import {
++  Dialog,
++  DialogContent,
++  DialogDescription,
++  DialogFooter,
++  DialogHeader,
++  DialogTitle,
++} from "@/components/ui/dialog";
++import { FormFields, FormView } from "@/components/forms/FormRenderer";
++import { usePractice } from "@/context/PracticeContext";
++import { useModules } from "@/lib/modules";
++import { canSeeClinical } from "@/lib/roles";
++import { getTemplate } from "@/lib/forms/templates";
++import { missingRequired, type Answers, type FormTemplate } from "@/lib/forms/types";
++import { getPatient } from "@/lib/db/patients";
++import { addAddendum, createNote, deleteDraft, getNote, saveDraft, signNote, type Note } from "@/lib/db/clinical";
++import { logExport, logRecordView } from "@/lib/audit";
++
++type SaveState = "idle" | "saving" | "saved" | "error";
++
++/**
++ * /patients/:patientId/notes/new?template=…  and  /patients/:patientId/notes/:noteId
++ * Write a note (drafts save automatically), sign it to lock it, then add
++ * addenda for anything later. Signed notes can be printed.
++ */
++export default function ClinicalNote() {
++  const { patientId = "", noteId } = useParams();
++  const [params] = useSearchParams();
++  const navigate = useNavigate();
++  const { practice } = usePractice();
++  const { hasFullClinical } = useModules();
++
++  const [note, setNote] = useState<Note | null>(null);
++  const [template, setTemplate] = useState<FormTemplate | null>(null);
++  const [answers, setAnswers] = useState<Answers>({});
++  const [patientName, setPatientName] = useState("");
++  const [id, setId] = useState<string | undefined>(noteId);
++  const [me, setMe] = useState<string | null>(null);
++  const [loading, setLoading] = useState(true);
++  const [save, setSave] = useState<SaveState>("idle");
++  const [dirty, setDirty] = useState(false);
++  const [invalid, setInvalid] = useState<Set<string>>(new Set());
++  const [confirmSign, setConfirmSign] = useState(false);
++  const [busy, setBusy] = useState(false);
++  const [reason, setReason] = useState("");
++  const [body, setBody] = useState("");
++  const creating = useRef<Promise<string> | null>(null);
++
++  const load = useCallback(async () => {
++    setLoading(true);
++    try {
++      const [{ data: u }, p] = await Promise.all([
++        import("@/config/supabase").then(({ supabase }) => supabase.auth.getUser()),
++        getPatient(patientId),
++      ]);
++      setMe(u.user?.id ?? null);
++      setPatientName(p.name);
++      if (noteId) {
++        const n = await getNote(noteId);
++        setNote(n);
++        setTemplate(n.template);
++        setAnswers(n.answers);
++        setId(n.id);
++      } else {
++        const t = getTemplate(params.get("template") ?? "");
++        if (!t) throw new Error("Choose a template from the member's record");
++        setTemplate(t);
++      }
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't open the note");
++    } finally {
++      setLoading(false);
++    }
++  }, [noteId, patientId]);
++
++  useEffect(() => {
++    load();
++    if (patientId) logRecordView(patientId, "clinical_record");
++  }, [load]);
++
++  const editable = !note || (note.status === "draft" && note.authorId === me);
++
++  // Save drafts automatically a moment after typing stops.
++  const persist = useCallback(async (next: Answers) => {
++    if (!practice || !template) return;
++    setSave("saving");
++    try {
++      if (!id) {
++        creating.current ??= createNote(practice.id, patientId, template, next);
++        const newId = await creating.current;
++        setId(newId);
++        window.history.replaceState(null, "", `/patients/${patientId}/notes/${newId}`);
++      } else {
++        await saveDraft(id, next);
++      }
++      setSave("saved");
++      setDirty(false);
++    } catch (error) {
++      setSave("error");
++      toast.error(error instanceof Error ? error.message : "Couldn't save the draft");
++    }
++  }, [practice?.id, template, id, patientId]);
++
++  useEffect(() => {
++    if (!dirty || !editable) return;
++    const t = setTimeout(() => persist(answers), 1500);
++    return () => clearTimeout(t);
++  }, [answers, dirty, editable, persist]);
++
++  // Warn before leaving with unsaved typing.
++  useEffect(() => {
++    const warn = (e: BeforeUnloadEvent) => {
++      if (dirty) {
++        e.preventDefault();
++        e.returnValue = "";
++      }
++    };
++    window.addEventListener("beforeunload", warn);
++    return () => window.removeEventListener("beforeunload", warn);
++  }, [dirty]);
++
++  const tryToSign = () => {
++    if (!template) return;
++    const missing = missingRequired(template, answers);
++    if (missing.length) {
++      setInvalid(new Set(missing.map((f) => f.id)));
++      document.getElementById(`field-${missing[0].id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
++      toast.error(`Fill in ${missing.map((f) => f.label.toLowerCase()).slice(0, 3).join(", ")}${missing.length > 3 ? "…" : ""} before signing`);
++      return;
++    }
++    setInvalid(new Set());
++    setConfirmSign(true);
++  };
++
++  const sign = async () => {
++    if (!practice || !template) return;
++    setBusy(true);
++    try {
++      let noteIdToOpen = id;
++      if (!noteIdToOpen) noteIdToOpen = await createNote(practice.id, patientId, template, answers, true);
++      else await signNote(noteIdToOpen, answers);
++      setDirty(false);
++      setConfirmSign(false);
++      toast.success("Note signed and locked");
++      navigate(`/patients/${patientId}/notes/${noteIdToOpen}`, { replace: true });
++      setNote(await getNote(noteIdToOpen));
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't sign the note");
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  const remove = async () => {
++    if (!id) return navigate(`/patients/${patientId}/record`);
++    if (!window.confirm("Delete this draft? This can't be undone.")) return;
++    try {
++      await deleteDraft(id);
++      setDirty(false);
++      toast.success("Draft deleted");
++      navigate(`/patients/${patientId}/record`);
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't delete");
++    }
++  };
++
++  const addend = async (e: React.FormEvent) => {
++    e.preventDefault();
++    if (!note) return;
++    setBusy(true);
++    try {
++      await addAddendum(note.id, reason, body);
++      setReason("");
++      setBody("");
++      setNote(await getNote(note.id));
++      toast.success("Addendum added");
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't add the addendum");
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  const print = async () => {
++    if (practice) await logExport(practice.id, "clinical");
++    window.print();
++  };
++
++  if (!practice) return <DashboardLayout><div /></DashboardLayout>;
++  if (!canSeeClinical(practice.role) || !hasFullClinical) {
++    return (
++      <DashboardLayout>
++        <Card className="mx-auto mt-10 max-w-lg p-8 text-center">
++          <Lock className="mx-auto h-8 w-8 text-muted-foreground" />
++          <p className="mt-4 font-semibold text-ink">Clinical notes aren't available to you here.</p>
++        </Card>
++      </DashboardLayout>
++    );
++  }
++
++  return (
++    <DashboardLayout>
++      <div className="mx-auto max-w-4xl space-y-6">
++        <Link to={`/patients/${patientId}/record`} className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-ink print:hidden">
++          <ArrowLeft className="h-4 w-4" /> {patientName ? `${patientName}'s record` : "Back to record"}
++        </Link>
++
++        {loading || !template ? (
++          <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="h-24 animate-pulse rounded-xl bg-muted" />)}</div>
++        ) : (
++          <>
++            {/* Header */}
++            <div className="flex flex-wrap items-end justify-between gap-4">
++              <div>
++                <p className="text-sm font-medium text-muted-foreground">
++                  {patientName} · {practice.name}
++                </p>
++                <h1 className="mt-1 text-2xl font-extrabold tracking-tight text-ink">{template.title}</h1>
++                <p className="mt-1 text-sm text-muted-foreground">
++                  {note
++                    ? note.status === "signed"
++                      ? `Signed by ${note.signedByName} on ${format(new Date(note.signedAt!), "d MMMM yyyy 'at' HH:mm")}`
++                      : `Draft by ${note.authorName}, started ${format(new Date(note.createdAt), "d MMM yyyy, HH:mm")}`
++                    : id
++                    ? "Draft, saved automatically as you type. Only you can see it until you sign."
++                    : "New note. It saves as a draft as you type."}
++                </p>
++              </div>
++              <div className="flex items-center gap-2 print:hidden">
++                {editable ? (
++                  <>
++                    <span className="mr-1 flex items-center gap-1.5 text-xs text-muted-foreground">
++                      {save === "saving" ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…</>
++                        : save === "saved" && !dirty ? <><Check className="h-3.5 w-3.5 text-emerald-600" /> Draft saved</>
++                        : save === "error" ? <span className="text-red-600">Not saved</span>
++                        : dirty ? "Unsaved changes" : null}
++                    </span>
++                    <Button variant="ghost" size="sm" className="gap-1.5 text-red-600 hover:text-red-700" onClick={remove}>
++                      <Trash2 className="h-4 w-4" /> {id ? "Delete draft" : "Discard"}
++                    </Button>
++                    <Button onClick={tryToSign} className="gap-2">
++                      <Lock className="h-4 w-4" /> Sign and lock
++                    </Button>
++                  </>
++                ) : note?.status === "signed" ? (
++                  <Button variant="outline" onClick={print} className="gap-2">
++                    <Printer className="h-4 w-4" /> Print
++                  </Button>
++                ) : null}
++              </div>
++            </div>
++
++            {note && note.status === "draft" && note.authorId !== me && (
++              <p className="rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-800">This is {note.authorName}'s draft. Only they can edit or sign it.</p>
++            )}
++
++            {/* Body */}
++            <Card className="p-6 sm:p-8">
++              {editable ? (
++                <FormFields
++                  template={template}
++                  answers={answers}
++                  onChange={(next) => {
++                    setAnswers(next);
++                    setDirty(true);
++                    // Clear red marks as fields get filled in.
++                    if (invalid.size) {
++                      const still = new Set(missingRequired(template, next).map((f) => f.id));
++                      setInvalid(new Set([...invalid].filter((id) => still.has(id))));
++                    }
++                  }}
++                  invalidIds={invalid}
++                />
++              ) : (
++                <FormView template={template} answers={answers} />
++              )}
++            </Card>
++
++            {/* Addenda */}
++            {note?.status === "signed" && (
++              <section className="space-y-3">
++                <h2 className="text-base font-bold text-ink">Addenda</h2>
++                {note.addenda.length === 0 && (
++                  <p className="text-sm text-muted-foreground">None. Signed notes can't be edited; add an addendum for anything later.</p>
++                )}
++                {note.addenda.map((a) => (
++                  <Card key={a.id} className="p-5">
++                    <p className="text-xs text-muted-foreground">
++                      {a.authorName} · {format(new Date(a.createdAt), "d MMM yyyy, HH:mm")} · <span className="font-medium text-ink">Reason: {a.reason}</span>
++                    </p>
++                    <p className="mt-2 whitespace-pre-wrap text-sm text-ink">{a.body}</p>
++                  </Card>
++                ))}
++                <Card className="p-5 print:hidden">
++                  <form onSubmit={addend} className="space-y-3">
++                    <p className="flex items-center gap-2 text-sm font-semibold text-ink"><PenLine className="h-4 w-4" /> Add an addendum</p>
++                    <div className="space-y-1.5">
++                      <Label htmlFor="reason">Reason</Label>
++                      <Input id="reason" required value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Lab results received, correction, late entry" />
++                    </div>
++                    <div className="space-y-1.5">
++                      <Label htmlFor="body">Addendum</Label>
++                      <Textarea id="body" required rows={3} value={body} onChange={(e) => setBody(e.target.value)} className="rounded-lg bg-card" />
++                    </div>
++                    <Button type="submit" disabled={busy || !reason.trim() || !body.trim()}>
++                      {busy ? "Adding…" : "Add addendum"}
++                    </Button>
++                  </form>
++                </Card>
++              </section>
++            )}
++          </>
++        )}
++      </div>
++
++      <Dialog open={confirmSign} onOpenChange={setConfirmSign}>
++        <DialogContent className="sm:max-w-md">
++          <DialogHeader>
++            <DialogTitle>Sign and lock this note?</DialogTitle>
++            <DialogDescription>
++              Once signed, the note can't be changed or deleted, by anyone. Anything you need to add later goes in an
++              addendum, with the date and a reason.
++            </DialogDescription>
++          </DialogHeader>
++          <DialogFooter>
++            <Button variant="ghost" onClick={() => setConfirmSign(false)}>Keep editing</Button>
++            <Button onClick={sign} disabled={busy} className="gap-2">
++              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />} Sign note
++            </Button>
++          </DialogFooter>
++        </DialogContent>
++      </Dialog>
++    </DashboardLayout>
++  );
++}
+diff --git a/src/pages/ClinicalRecord.tsx b/src/pages/ClinicalRecord.tsx
+new file mode 100644
+index 0000000..d4b17a4
+--- /dev/null
++++ b/src/pages/ClinicalRecord.tsx
+@@ -0,0 +1,295 @@
++import { useCallback, useEffect, useMemo, useState } from "react";
++import { Link, useNavigate, useParams } from "react-router-dom";
++import { toast } from "sonner";
++import { differenceInYears, format } from "date-fns";
++import {
++  AlertTriangle,
++  ArrowLeft,
++  ChevronDown,
++  ClipboardList,
++  FileHeart,
++  FilePen,
++  Lock,
++  Plus,
++} from "lucide-react";
++import { DashboardLayout } from "@/components/Dashboard/DashboardLayout";
++import { Card } from "@/components/ui/card";
++import { Button } from "@/components/ui/button";
++import {
++  DropdownMenu,
++  DropdownMenuContent,
++  DropdownMenuItem,
++  DropdownMenuLabel,
++  DropdownMenuSeparator,
++  DropdownMenuTrigger,
++} from "@/components/ui/dropdown-menu";
++import { FormView } from "@/components/forms/FormRenderer";
++import { IntakeActions } from "@/components/intake/IntakeActions";
++import { usePractice } from "@/context/PracticeContext";
++import { useModules } from "@/lib/modules";
++import { canSeeClinical } from "@/lib/roles";
++import { templatesFor } from "@/lib/forms/templates";
++import type { YesNoAnswer } from "@/lib/forms/types";
++import { getPatient } from "@/lib/db/patients";
++import { intakeOverview, listIntakeSubmissions, listNotes, type IntakeOverviewItem, type IntakeSubmission, type NoteSummary } from "@/lib/db/clinical";
++import { logRecordView } from "@/lib/audit";
++import type { Patient } from "@/types/patient";
++import { cn } from "@/lib/utils";
++
++type Tab = "all" | "notes" | "intake";
++
++function age(dob?: string) {
++  if (!dob) return null;
++  const d = new Date(dob);
++  return isNaN(d.getTime()) ? null : differenceInYears(new Date(), d);
++}
++
++/** Allergies anyone reported on an intake form, newest first. */
++function allergyAlerts(subs: IntakeSubmission[]) {
++  const out: { text: string; from: string; at: string }[] = [];
++  for (const s of subs) {
++    const a = s.answers?.allergies as YesNoAnswer | undefined;
++    if (a?.answer === "yes") out.push({ text: a.details?.trim() || "Yes (no details given)", from: s.title, at: s.submittedAt });
++  }
++  return out.slice(0, 3);
++}
++
++/**
++ * /patients/:patientId/record — a member's clinical record: notes and
++ * intake forms. Practitioners and admins only; every visit is logged.
++ */
++export default function ClinicalRecord() {
++  const { patientId = "" } = useParams();
++  const navigate = useNavigate();
++  const { practice } = usePractice();
++  const { hasClinical, hasFullClinical } = useModules();
++  const allowed = canSeeClinical(practice?.role);
++
++  const [patient, setPatient] = useState<Patient | null>(null);
++  const [notes, setNotes] = useState<NoteSummary[]>([]);
++  const [subs, setSubs] = useState<IntakeSubmission[]>([]);
++  const [pending, setPending] = useState<IntakeOverviewItem[]>([]);
++  const [loading, setLoading] = useState(true);
++  const [tab, setTab] = useState<Tab>("all");
++  const [open, setOpen] = useState<string | null>(null);
++  const [me, setMe] = useState<string | null>(null);
++
++  const load = useCallback(async () => {
++    if (!practice || !allowed) return;
++    setLoading(true);
++    try {
++      const [p, n, s, o] = await Promise.all([
++        getPatient(patientId),
++        hasFullClinical ? listNotes(patientId) : Promise.resolve([]),
++        listIntakeSubmissions(patientId),
++        intakeOverview(patientId),
++      ]);
++      setPatient(p);
++      setNotes(n);
++      setSubs(s);
++      setPending(o.filter((i) => i.kind === "link" && i.status === "waiting"));
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't open the record");
++    } finally {
++      setLoading(false);
++    }
++  }, [patientId, practice?.id, allowed, hasFullClinical]);
++
++  useEffect(() => {
++    load();
++    if (allowed && patientId) logRecordView(patientId, "clinical_record");
++    import("@/config/supabase").then(({ supabase }) => supabase.auth.getUser().then(({ data }) => setMe(data.user?.id ?? null)));
++  }, [load]);
++
++  const items = useMemo(() => {
++    const all = [
++      ...notes.map((n) => ({ type: "note" as const, at: n.signedAt ?? n.createdAt, note: n })),
++      ...subs.map((s) => ({ type: "intake" as const, at: s.submittedAt, sub: s })),
++    ].sort((a, b) => b.at.localeCompare(a.at));
++    return all.filter((i) => tab === "all" || (tab === "notes" ? i.type === "note" : i.type === "intake"));
++  }, [notes, subs, tab]);
++
++  if (!practice) return <DashboardLayout><div /></DashboardLayout>;
++
++  if (!allowed || !hasClinical) {
++    return (
++      <DashboardLayout>
++        <Card className="mx-auto mt-10 max-w-lg p-8 text-center">
++          <Lock className="mx-auto h-8 w-8 text-muted-foreground" />
++          <h1 className="mt-4 text-lg font-bold text-ink">
++            {!hasClinical ? "Clinical records are switched off" : "Only practitioners and admins can open clinical records"}
++          </h1>
++          <p className="mt-2 text-sm text-muted-foreground">
++            {!hasClinical ? "A practice admin can switch them on in Settings → Modules." : "Ask a practitioner if you need something from this record."}
++          </p>
++          <Button variant="outline" className="mt-6" onClick={() => navigate("/patients")}>Back to members</Button>
++        </Card>
++      </DashboardLayout>
++    );
++  }
++
++  const years = age(patient?.dateOfBirth);
++  const alerts = allergyAlerts(subs);
++  const noteTemplates = templatesFor("clinical_note", practice.category);
++
++  return (
++    <DashboardLayout>
++      <div className="space-y-6">
++        <Link to="/patients" className="inline-flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-ink">
++          <ArrowLeft className="h-4 w-4" /> Members
++        </Link>
++
++        {/* Header */}
++        <div className="flex flex-wrap items-end justify-between gap-4">
++          <div>
++            <p className="text-sm font-medium text-muted-foreground">Clinical record</p>
++            <h1 className="mt-1 text-3xl font-extrabold tracking-tight text-ink">{patient?.name ?? (loading ? "…" : "Member")}</h1>
++            <p className="mt-1 text-sm text-muted-foreground">
++              {[years !== null ? `${years} years old` : null, patient?.contact_number, patient?.email].filter(Boolean).join(" · ")}
++            </p>
++          </div>
++          <div className="flex flex-wrap gap-2">
++            {patient && <IntakeActions patient={{ id: patient.id, name: patient.name, email: patient.email, phone: patient.contact_number }} onSent={load} size="default" />}
++            {hasFullClinical && (
++              <DropdownMenu>
++                <DropdownMenuTrigger asChild>
++                  <Button className="gap-2">
++                    <Plus className="h-4 w-4" /> New note <ChevronDown className="h-4 w-4 opacity-70" />
++                  </Button>
++                </DropdownMenuTrigger>
++                <DropdownMenuContent align="end" className="w-80">
++                  <DropdownMenuLabel>Choose a template</DropdownMenuLabel>
++                  <DropdownMenuSeparator />
++                  {noteTemplates.map(({ template, suggested }) => (
++                    <DropdownMenuItem
++                      key={template.key}
++                      onClick={() => navigate(`/patients/${patientId}/notes/new?template=${template.key}`)}
++                      className="flex-col items-start gap-0.5"
++                    >
++                      <span className="font-medium">
++                        {template.title}
++                        {suggested && <span className="ml-2 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">Suggested</span>}
++                      </span>
++                      <span className="text-xs text-muted-foreground">{template.description}</span>
++                    </DropdownMenuItem>
++                  ))}
++                </DropdownMenuContent>
++              </DropdownMenu>
++            )}
++          </div>
++        </div>
++
++        {/* Alerts */}
++        {alerts.length > 0 && (
++          <div className="flex items-start gap-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3">
++            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-red-600" />
++            <div className="text-sm">
++              <p className="font-bold text-red-800">Allergies</p>
++              {alerts.map((a, i) => (
++                <p key={i} className="text-red-800">
++                  {a.text} <span className="text-red-700/70">· {a.from}, {format(new Date(a.at), "d MMM yyyy")}</span>
++                </p>
++              ))}
++            </div>
++          </div>
++        )}
++
++        {pending.length > 0 && (
++          <p className="text-sm text-muted-foreground">
++            Waiting for {patient?.name.split(" ")[0] ?? "them"} to fill in: {pending.map((p) => p.title).join(", ")}.
++          </p>
++        )}
++
++        {/* Tabs */}
++        <div className="flex gap-1 rounded-xl border border-border bg-card p-1.5 w-fit">
++          {([
++            ["all", "Everything"],
++            ...(hasFullClinical ? [["notes", `Notes (${notes.length})`]] : []),
++            ["intake", `Intake forms (${subs.length})`],
++          ] as [Tab, string][]).map(([id, label]) => (
++            <button
++              key={id}
++              onClick={() => setTab(id)}
++              className={cn("rounded-lg px-3 py-1.5 text-sm font-medium transition-colors", tab === id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:text-ink")}
++            >
++              {label}
++            </button>
++          ))}
++        </div>
++
++        {/* Timeline */}
++        {loading ? (
++          <div className="space-y-3">{[0, 1, 2].map((i) => <div key={i} className="h-20 animate-pulse rounded-xl bg-muted" />)}</div>
++        ) : items.length === 0 ? (
++          <Card className="px-6 py-14 text-center">
++            <FileHeart className="mx-auto h-8 w-8 text-primary" />
++            <p className="mt-3 font-semibold text-ink">Nothing on record yet</p>
++            <p className="mt-1 text-sm text-muted-foreground">
++              {hasFullClinical ? "Start a note, or ask the member to fill in an intake form." : "Ask the member to fill in an intake form."}
++            </p>
++          </Card>
++        ) : (
++          <ol className="space-y-3">
++            {items.map((i) =>
++              i.type === "note" ? (
++                <li key={`n-${i.note.id}`}>
++                  <Link to={`/patients/${patientId}/notes/${i.note.id}`}>
++                    <Card className="flex items-center gap-4 p-4 transition-shadow hover:shadow-lift">
++                      <span className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-lg", i.note.status === "signed" ? "bg-primary/10 text-primary" : "bg-amber-50 text-amber-700")}>
++                        <FilePen className="h-5 w-5" />
++                      </span>
++                      <div className="min-w-0 flex-1">
++                        <p className="font-semibold text-ink">{i.note.title}</p>
++                        <p className="text-xs text-muted-foreground">
++                          {i.note.authorName} · {format(new Date(i.at), "d MMM yyyy, HH:mm")}
++                          {i.note.addendaCount > 0 && ` · ${i.note.addendaCount} addend${i.note.addendaCount === 1 ? "um" : "a"}`}
++                        </p>
++                      </div>
++                      {i.note.status === "signed" ? (
++                        <span className="flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
++                          <Lock className="h-3 w-3" /> Signed
++                        </span>
++                      ) : (
++                        <span className="rounded-full bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700">
++                          Draft{i.note.authorId === me ? " (yours)" : ""}
++                        </span>
++                      )}
++                    </Card>
++                  </Link>
++                </li>
++              ) : (
++                <li key={`s-${i.sub.id}`}>
++                  <Card className="overflow-hidden">
++                    <button onClick={() => setOpen(open === i.sub.id ? null : i.sub.id)} className="flex w-full items-center gap-4 p-4 text-left" aria-expanded={open === i.sub.id}>
++                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-700">
++                        <ClipboardList className="h-5 w-5" />
++                      </span>
++                      <div className="min-w-0 flex-1">
++                        <p className="font-semibold text-ink">{i.sub.title}</p>
++                        <p className="text-xs text-muted-foreground">
++                          Filled in by {i.sub.signedName} {i.sub.source === "link" ? "from a link" : `in the practice${i.sub.collectedByName ? ` (with ${i.sub.collectedByName})` : ""}`} ·{" "}
++                          {format(new Date(i.at), "d MMM yyyy, HH:mm")}
++                        </p>
++                      </div>
++                      <span className="rounded-full bg-teal-50 px-2.5 py-1 text-xs font-semibold text-teal-700">Intake form</span>
++                      <ChevronDown className={cn("h-4 w-4 shrink-0 text-muted-foreground transition-transform", open === i.sub.id && "rotate-180")} />
++                    </button>
++                    {open === i.sub.id && (
++                      <div className="border-t border-border px-6 py-5">
++                        <FormView template={i.sub.template} answers={i.sub.answers} />
++                        <div className="mt-6 rounded-lg bg-muted/50 p-3 text-xs text-muted-foreground">
++                          <p className="font-semibold text-ink">Consent, signed "{i.sub.signedName}"</p>
++                          <p className="mt-1">{i.sub.consentText}</p>
++                        </div>
++                      </div>
++                    )}
++                  </Card>
++                </li>
++              )
++            )}
++          </ol>
++        )}
++      </div>
++    </DashboardLayout>
++  );
++}
+diff --git a/src/pages/Index.tsx b/src/pages/Index.tsx
+index b4d8414..0542b41 100644
+--- a/src/pages/Index.tsx
++++ b/src/pages/Index.tsx
+@@ -15,6 +15,7 @@ import {
+   CheckCircle2,
+ 
+   Inbox,
++  FileHeart,
+ } from "lucide-react";
+ import React, { useEffect, useMemo, useState } from "react";
+ import { useNavigate } from "react-router-dom";
+@@ -35,6 +36,8 @@ import { WaitingTimer } from "@/components/Appointment/WaitingTimer";
+ import { RandIcon } from "@/components/icons/RandIcon";
+ import { formatRandCompact } from "@/lib/currency";
+ import { cn } from "@/lib/utils";
++import { useModules } from "@/lib/modules";
++import { canSeeClinical } from "@/lib/roles";
+ 
+ /* ------------------------------------------------------------------ */
+ /* Small building blocks                                               */
+@@ -138,6 +141,8 @@ const Dashboard: React.FC = () => {
+   const navigate = useNavigate();
+   const practiceId = useCurrentPractice();
+   const { practice } = usePractice();
++  const { hasClinical } = useModules();
++  const showRecordLinks = hasClinical && canSeeClinical(practice?.role);
+ 
+   const [appointments, setAppointments] = useState<Appointment[]>([]);
+   const [patients, setPatients] = useState<Patient[]>([]);
+@@ -380,6 +385,17 @@ const Dashboard: React.FC = () => {
+                           {[services, a.doctor_name].filter(Boolean).join(" · ") || "No services listed"}
+                         </p>
+                       </div>
++                      {showRecordLinks && a.patient_id && (
++                        <Button
++                          variant="ghost"
++                          size="sm"
++                          className="h-8 shrink-0 gap-1.5 text-muted-foreground hover:text-primary"
++                          onClick={() => navigate(`/patients/${a.patient_id}/record`)}
++                          title="Open clinical record"
++                        >
++                          <FileHeart className="h-4 w-4" /> Record
++                        </Button>
++                      )}
+                       {a.status === "waiting" && a.wait_start_time && (
+                         <WaitingTimer status={a.status} wait_start_time={a.wait_start_time} />
+                       )}
+diff --git a/src/pages/IntakeByLink.tsx b/src/pages/IntakeByLink.tsx
+new file mode 100644
+index 0000000..fc47886
+--- /dev/null
++++ b/src/pages/IntakeByLink.tsx
+@@ -0,0 +1,115 @@
++import { useEffect, useRef, useState } from "react";
++import { useParams } from "react-router-dom";
++import { CheckCircle2, Loader2, TriangleAlert } from "lucide-react";
++import { IntakeFormFill } from "@/components/intake/IntakeFormFill";
++import { applyBrand } from "@/lib/branding";
++import { getTemplate } from "@/lib/forms/templates";
++import { getIntakeLink, submitIntakeLink, type IntakeLinkInfo } from "@/lib/db/clinical";
++import { POWERED_BY_TEXT } from "@/lib/branding";
++
++const DEAD: Record<string, { title: string; body: string }> = {
++  invalid: { title: "This link isn't valid", body: "Check that you opened the whole link, or ask the practice to send it again." },
++  expired: { title: "This link has expired", body: "Ask the practice to send you a new one." },
++  cancelled: { title: "This link is no longer active", body: "The practice may have sent you a newer one." },
++  completed: { title: "You've already sent this form", body: "Thank you! There's nothing more to do." },
++};
++
++/**
++ * /intake/:token — a member fills in a form the practice sent them, on
++ * their own phone, without logging in. Shown in the practice's colours.
++ */
++export default function IntakeByLink() {
++  const { token = "" } = useParams();
++  const [info, setInfo] = useState<IntakeLinkInfo | null>(null);
++  const [done, setDone] = useState(false);
++  const page = useRef<HTMLDivElement>(null);
++
++  useEffect(() => {
++    getIntakeLink(token)
++      .then((i) => {
++        setInfo(i);
++        if (i.practice_name) document.title = `${i.practice_name} · Form`;
++      })
++      .catch(() => setInfo({ status: "invalid" }));
++  }, [token]);
++
++  // The practice's colours, on this page only (the app resets its own
++  // colours when nobody is signed in).
++  useEffect(() => {
++    if (page.current && (info?.brand_primary_color || info?.brand_accent_color)) {
++      applyBrand({ primary: info.brand_primary_color, accent: info.brand_accent_color }, page.current);
++    }
++  }, [info, done]);
++
++  if (!info) {
++    return (
++      <div className="flex min-h-screen items-center justify-center bg-background">
++        <Loader2 className="h-7 w-7 animate-spin text-muted-foreground" />
++      </div>
++    );
++  }
++
++  const template = info.template_key ? getTemplate(info.template_key) : undefined;
++  const status = info.status === "pending" && !template ? "invalid" : info.status;
++
++  return (
++    <div ref={page} className="min-h-screen bg-background">
++      <header className="border-b border-border bg-card">
++        <div className="mx-auto flex max-w-2xl items-center gap-3 px-5 py-4">
++          {info.logo_url ? (
++            <img src={info.logo_url} alt="" className="h-10 w-10 rounded-lg bg-white object-contain ring-1 ring-border" />
++          ) : info.practice_name ? (
++            <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary text-base font-bold text-primary-foreground">
++              {info.practice_name.slice(0, 1)}
++            </span>
++          ) : null}
++          <p className="text-lg font-bold text-ink">{info.practice_name ?? "Care Africa"}</p>
++        </div>
++      </header>
++
++      <main className="mx-auto max-w-2xl px-5 py-8 sm:py-12">
++        {done ? (
++          <div className="py-16 text-center">
++            <CheckCircle2 className="mx-auto h-14 w-14 text-emerald-500" />
++            <h1 className="mt-5 text-3xl font-extrabold tracking-tight text-ink">Thank you{info.first_name ? `, ${info.first_name}` : ""}!</h1>
++            <p className="mt-2 text-lg text-muted-foreground">{info.practice_name} has your form. You can close this page.</p>
++          </div>
++        ) : status !== "pending" ? (
++          <div className="py-16 text-center">
++            {status === "completed" ? (
++              <CheckCircle2 className="mx-auto h-12 w-12 text-emerald-500" />
++            ) : (
++              <TriangleAlert className="mx-auto h-12 w-12 text-amber-500" />
++            )}
++            <h1 className="mt-5 text-2xl font-extrabold tracking-tight text-ink">{(DEAD[status] ?? DEAD.invalid).title}</h1>
++            <p className="mt-2 text-muted-foreground">{(DEAD[status] ?? DEAD.invalid).body}</p>
++          </div>
++        ) : (
++          template && (
++            <>
++              <h1 className="text-3xl font-extrabold tracking-tight text-ink">
++                {info.first_name ? `Hi ${info.first_name},` : "Hello,"}
++              </h1>
++              <p className="mt-2 text-lg text-muted-foreground">
++                {info.practice_name} has asked you to fill in this form before your visit. It takes a few minutes.
++              </p>
++              <h2 className="mt-8 text-xl font-bold text-ink">{template.title}</h2>
++              <div className="mt-6">
++                <IntakeFormFill
++                  template={template}
++                  practiceName={info.practice_name ?? "the practice"}
++                  onSubmit={async (answers, consent, name) => {
++                    await submitIntakeLink(token, template, answers, consent, name);
++                    setDone(true);
++                    window.scrollTo({ top: 0 });
++                  }}
++                />
++              </div>
++            </>
++          )
++        )}
++      </main>
++      <footer className="pb-8 text-center text-xs text-muted-foreground/80">{POWERED_BY_TEXT}</footer>
++    </div>
++  );
++}
+diff --git a/src/pages/IntakeOnDevice.tsx b/src/pages/IntakeOnDevice.tsx
+new file mode 100644
+index 0000000..8286a0a
+--- /dev/null
++++ b/src/pages/IntakeOnDevice.tsx
+@@ -0,0 +1,164 @@
++import { useEffect, useState } from "react";
++import { useNavigate, useParams, useSearchParams } from "react-router-dom";
++import { toast } from "sonner";
++import { CheckCircle2, Loader2, LogOut } from "lucide-react";
++import { Button } from "@/components/ui/button";
++import {
++  Dialog,
++  DialogContent,
++  DialogDescription,
++  DialogFooter,
++  DialogHeader,
++  DialogTitle,
++} from "@/components/ui/dialog";
++import { CodeInput } from "@/components/twostep/CodeInput";
++import { IntakeFormFill } from "@/components/intake/IntakeFormFill";
++import { usePractice } from "@/context/PracticeContext";
++import { canSeeClinical } from "@/lib/roles";
++import { getTemplate } from "@/lib/forms/templates";
++import { getPatient } from "@/lib/db/patients";
++import { submitIntakeInPractice } from "@/lib/db/clinical";
++import { getAuthenticator, verifyAuthenticatorCode } from "@/lib/twoStep";
++
++/**
++ * /patients/:patientId/intake/new?template=…
++ * A full-screen form to hand to the client on a practice tablet or PC.
++ * Nothing else in the app is reachable from here: leaving needs the staff
++ * member's authenticator code, so a client can't wander into the system.
++ */
++export default function IntakeOnDevice() {
++  const { patientId = "" } = useParams();
++  const [params] = useSearchParams();
++  const navigate = useNavigate();
++  const { practice } = usePractice();
++  const template = getTemplate(params.get("template") ?? "");
++
++  const [patientName, setPatientName] = useState("");
++  const [done, setDone] = useState(false);
++  const [exitOpen, setExitOpen] = useState(false);
++  const [needsCode, setNeedsCode] = useState(true);
++  const [code, setCode] = useState("");
++  const [checking, setChecking] = useState(false);
++
++  useEffect(() => {
++    getPatient(patientId).then((p) => setPatientName(p.name)).catch(() => setPatientName(""));
++    getAuthenticator().then((f) => setNeedsCode(!!f));
++  }, [patientId]);
++
++  // Keep the client on this page: the browser's back button reopens it.
++  useEffect(() => {
++    if (!exitOpen) window.history.pushState(null, "", window.location.href);
++    const stay = () => {
++      window.history.pushState(null, "", window.location.href);
++      setExitOpen(true);
++    };
++    window.addEventListener("popstate", stay);
++    return () => window.removeEventListener("popstate", stay);
++  }, []);
++
++  const back = practice && canSeeClinical(practice.role) ? `/patients/${patientId}/record` : "/patients";
++
++  const leave = async (e?: React.FormEvent) => {
++    e?.preventDefault();
++    if (needsCode) {
++      setChecking(true);
++      try {
++        await verifyAuthenticatorCode(code);
++      } catch (error) {
++        toast.error(error instanceof Error ? error.message : "That code didn't work");
++        setCode("");
++        return;
++      } finally {
++        setChecking(false);
++      }
++    }
++    navigate(back, { replace: true });
++  };
++
++  if (!practice || !template || template.kind !== "intake") {
++    return (
++      <div className="flex min-h-screen items-center justify-center bg-background p-6 text-center">
++        <div>
++          <p className="font-semibold text-ink">This form isn't available.</p>
++          <Button variant="outline" className="mt-4" onClick={() => navigate("/patients")}>Back to members</Button>
++        </div>
++      </div>
++    );
++  }
++
++  const first = patientName.split(" ")[0];
++
++  return (
++    <div className="min-h-screen bg-background">
++      <header className="sticky top-0 z-10 border-b border-border bg-card/90 backdrop-blur">
++        <div className="mx-auto flex max-w-3xl items-center gap-3 px-5 py-3">
++          {practice.logo_url ? (
++            <img src={practice.logo_url} alt="" className="h-9 w-9 rounded-lg bg-white object-contain ring-1 ring-border" />
++          ) : (
++            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-sm font-bold text-primary-foreground">
++              {practice.name.slice(0, 1)}
++            </span>
++          )}
++          <p className="flex-1 font-bold text-ink">{practice.name}</p>
++          <Button variant="ghost" size="sm" className="gap-1.5 text-muted-foreground" onClick={() => setExitOpen(true)}>
++            <LogOut className="h-4 w-4" /> Staff
++          </Button>
++        </div>
++      </header>
++
++      <main className="mx-auto max-w-3xl px-5 py-8 sm:py-12">
++        {done ? (
++          <div className="py-16 text-center">
++            <CheckCircle2 className="mx-auto h-14 w-14 text-emerald-500" />
++            <h1 className="mt-5 text-3xl font-extrabold tracking-tight text-ink">Thank you{first ? `, ${first}` : ""}!</h1>
++            <p className="mt-2 text-lg text-muted-foreground">Please hand the device back to reception.</p>
++            <Button variant="outline" className="mt-10" onClick={() => setExitOpen(true)}>Staff: back to Care Africa</Button>
++          </div>
++        ) : (
++          <>
++            <h1 className="text-3xl font-extrabold tracking-tight text-ink">{first ? `Hi ${first},` : "Welcome,"}</h1>
++            <p className="mt-2 text-lg text-muted-foreground">
++              please fill in this form so we can look after you safely. It takes a few minutes.
++            </p>
++            <h2 className="mt-8 text-xl font-bold text-ink">{template.title}</h2>
++            <div className="mt-6">
++              <IntakeFormFill
++                template={template}
++                practiceName={practice.name}
++                defaultName={patientName}
++                onSubmit={async (answers, consent, name) => {
++                  await submitIntakeInPractice(practice.id, patientId, template, answers, consent, name);
++                  setDone(true);
++                  window.scrollTo({ top: 0 });
++                }}
++              />
++            </div>
++          </>
++        )}
++      </main>
++
++      <Dialog open={exitOpen} onOpenChange={setExitOpen}>
++        <DialogContent className="sm:max-w-sm">
++          <form onSubmit={leave}>
++            <DialogHeader>
++              <DialogTitle>Staff only</DialogTitle>
++              <DialogDescription>
++                {needsCode
++                  ? "Enter the code from your authenticator app to go back to Care Africa."
++                  : "Go back to Care Africa?"}
++                {!done && " The form hasn't been sent yet."}
++              </DialogDescription>
++            </DialogHeader>
++            {needsCode && <div className="py-4"><CodeInput value={code} onChange={setCode} /></div>}
++            <DialogFooter>
++              <Button type="button" variant="ghost" onClick={() => setExitOpen(false)}>Stay here</Button>
++              <Button type="submit" disabled={checking || (needsCode && code.length !== 6)}>
++                {checking ? <Loader2 className="h-4 w-4 animate-spin" /> : "Back to Care Africa"}
++              </Button>
++            </DialogFooter>
++          </form>
++        </DialogContent>
++      </Dialog>
++    </div>
++  );
++}
+diff --git a/supabase/demo/seed_demo.sql b/supabase/demo/seed_demo.sql
+index 5678a40..9426b90 100644
+--- a/supabase/demo/seed_demo.sql
++++ b/supabase/demo/seed_demo.sql
+@@ -76,6 +76,11 @@ begin
+   end if;
+ 
+   -- ---------- wipe this practice's demo data -------------------------
++  -- Clinical records first (only Care Africa can remove these; needs 0010).
++  delete from clinical_note_addenda where practice_id = v_practice;
++  delete from clinical_notes        where practice_id = v_practice;
++  delete from intake_requests       where practice_id = v_practice;
++  delete from intake_submissions    where practice_id = v_practice;
+   delete from reward_claims    where practice_id = v_practice;
+   delete from orders           where practice_id = v_practice;
+   delete from appointments     where practice_id = v_practice;
+diff --git a/supabase/migrations/0010_clinical_records.sql b/supabase/migrations/0010_clinical_records.sql
+new file mode 100644
+index 0000000..d670a14
+--- /dev/null
++++ b/supabase/migrations/0010_clinical_records.sql
+@@ -0,0 +1,514 @@
++-- =====================================================================
++-- Care Africa — 0010 clinical notes and intake forms
++-- =====================================================================
++-- Built on the templates in the app (src/lib/forms/templates.ts). Each
++-- record keeps a copy of the exact template it was filled in on, so the
++-- questions asked are on record even after a template is improved.
++--
++-- Clinical notes (module "full clinical notes"):
++--   * Written by practitioners and admins. Front desk can't see them.
++--   * Draft → signed. Drafts are private to their author and can be
++--     deleted. Once signed, a note is locked for good: corrections are
++--     dated addenda with a reason (HPCSA: records may not be altered).
++--   * Signed notes and addenda can never be deleted (retention: at least
++--     6 years after a record goes dormant; minors until age 21).
++--
++-- Intake forms (module "intake forms" or "full clinical notes"):
++--   * Filled in by the client on a practice device, or from a link sent
++--     before the visit. Each keeps the client's consent and typed name.
++--   * Any team member can start one or send a link and see whether it's
++--     been completed. Only practitioners and admins can read the answers.
++--   * Submitted forms can't be changed or deleted.
++--
++-- Everything here is in the activity log (0009); clinical content is not.
++-- Run 0006–0009 first.
++-- =====================================================================
++
++begin;
++
++-- ---------------------------------------------------------------------
++-- Is the module switched on for this practice?
++-- ---------------------------------------------------------------------
++create or replace function practice_has_module(target_practice uuid, level text)
++returns boolean language sql stable security definer set search_path = public as $$
++  select case level
++           when 'intake' then clinical_records in ('intake', 'full')
++           when 'full'   then clinical_records = 'full'
++           else false end
++    from practices where id = target_practice;
++$$;
++revoke execute on function practice_has_module(uuid, text) from public;
++grant  execute on function practice_has_module(uuid, text) to authenticated;
++
++-- ---------------------------------------------------------------------
++-- Clinical notes
++-- ---------------------------------------------------------------------
++create table if not exists clinical_notes (
++  id               uuid primary key default gen_random_uuid(),
++  practice_id      uuid not null references practices(id) on delete cascade,
++  patient_id       uuid not null references patients(id),
++  appointment_id   uuid references appointments(id) on delete set null,
++  author_id        uuid not null default auth.uid() references profiles(id),
++  template_key     text not null,
++  template_version int  not null,
++  template         jsonb not null,
++  title            text not null,
++  answers          jsonb not null default '{}'::jsonb,
++  status           text not null default 'draft' check (status in ('draft', 'signed')),
++  signed_at        timestamptz,
++  signed_by        uuid references profiles(id),
++  created_at       timestamptz not null default now(),
++  updated_at       timestamptz not null default now(),
++  check (pg_column_size(answers) < 200000)
++);
++create index if not exists clinical_notes_patient_idx on clinical_notes (patient_id, created_at desc);
++create index if not exists clinical_notes_practice_idx on clinical_notes (practice_id, created_at desc);
++
++create table if not exists clinical_note_addenda (
++  id          uuid primary key default gen_random_uuid(),
++  note_id     uuid not null references clinical_notes(id),
++  practice_id uuid not null references practices(id) on delete cascade,
++  patient_id  uuid not null references patients(id),
++  author_id   uuid not null default auth.uid() references profiles(id),
++  reason      text not null check (length(btrim(reason)) > 0),
++  body        text not null check (length(btrim(body)) > 0),
++  created_at  timestamptz not null default now()
++);
++create index if not exists clinical_note_addenda_note_idx on clinical_note_addenda (note_id, created_at);
++
++-- Rules the policies can't express on their own.
++create or replace function clinical_note_rules()
++returns trigger language plpgsql as $$
++begin
++  if tg_op = 'DELETE' then
++    if old.status = 'signed' and current_user in ('anon', 'authenticated') then
++      raise exception 'Signed notes can''t be deleted' using errcode = '42501';
++    end if;
++    return old;
++  end if;
++
++  if not exists (select 1 from patients where id = new.patient_id and practice_id = new.practice_id) then
++    raise exception 'That member isn''t at this practice';
++  end if;
++
++  if tg_op = 'UPDATE' then
++    if old.status = 'signed' then
++      raise exception 'Signed notes can''t be changed. Add an addendum instead.' using errcode = '42501';
++    end if;
++    -- These never change after the note is started.
++    new.practice_id := old.practice_id;
++    new.patient_id := old.patient_id;
++    new.author_id := old.author_id;
++    new.created_at := old.created_at;
++  end if;
++
++  if new.status = 'signed' then
++    if current_user in ('anon', 'authenticated') and new.author_id is distinct from auth.uid() then
++      raise exception 'Only the author can sign a note' using errcode = '42501';
++    end if;
++    new.signed_at := now();
++    new.signed_by := coalesce(auth.uid(), new.author_id);
++  else
++    new.signed_at := null;
++    new.signed_by := null;
++  end if;
++  new.updated_at := now();
++  return new;
++end $$;
++
++drop trigger if exists clinical_notes_rules on clinical_notes;
++create trigger clinical_notes_rules
++  before insert or update or delete on clinical_notes
++  for each row execute function clinical_note_rules();
++
++create or replace function clinical_addendum_rules()
++returns trigger language plpgsql as $$
++declare n clinical_notes%rowtype;
++begin
++  if tg_op <> 'INSERT' then
++    -- Care Africa removing a whole practice is the only exception.
++    -- Nobody, Care Africa included, can edit one.
++    if tg_op = 'DELETE' and current_user not in ('anon', 'authenticated') then
++      return old;
++    end if;
++    raise exception 'Addenda can''t be changed or deleted' using errcode = '42501';
++  end if;
++  select * into n from clinical_notes where id = new.note_id;
++  if not found then
++    raise exception 'Not allowed' using errcode = '42501';  -- not a note this person can see
++  end if;
++  if n.status <> 'signed' then
++    raise exception 'Addenda can only be added to a signed note';
++  end if;
++  new.practice_id := n.practice_id;
++  new.patient_id := n.patient_id;
++  new.created_at := now();
++  return new;
++end $$;
++
++drop trigger if exists clinical_note_addenda_rules on clinical_note_addenda;
++create trigger clinical_note_addenda_rules
++  before insert or update or delete on clinical_note_addenda
++  for each row execute function clinical_addendum_rules();
++
++alter table clinical_notes enable row level security;
++alter table clinical_note_addenda enable row level security;
++
++drop policy if exists clinical_notes_read on clinical_notes;
++create policy clinical_notes_read on clinical_notes for select using (
++  auth_is_clinical_member(practice_id)
++  and (status = 'signed' or author_id = auth.uid())          -- drafts are private
++);
++drop policy if exists clinical_notes_insert on clinical_notes;
++create policy clinical_notes_insert on clinical_notes for insert with check (
++  auth_is_clinical_member(practice_id)
++  and practice_has_module(practice_id, 'full')
++  and author_id = auth.uid()
++);
++drop policy if exists clinical_notes_update on clinical_notes;
++create policy clinical_notes_update on clinical_notes for update
++  using (auth_is_clinical_member(practice_id) and author_id = auth.uid() and status = 'draft')
++  with check (auth_is_clinical_member(practice_id) and author_id = auth.uid());
++drop policy if exists clinical_notes_delete on clinical_notes;
++create policy clinical_notes_delete on clinical_notes for delete
++  using (auth_is_clinical_member(practice_id) and author_id = auth.uid() and status = 'draft');
++
++drop policy if exists clinical_note_addenda_read on clinical_note_addenda;
++create policy clinical_note_addenda_read on clinical_note_addenda for select
++  using (auth_is_clinical_member(practice_id));
++drop policy if exists clinical_note_addenda_insert on clinical_note_addenda;
++create policy clinical_note_addenda_insert on clinical_note_addenda for insert with check (
++  author_id = auth.uid()
++  and exists (select 1 from clinical_notes n
++               where n.id = note_id and auth_is_clinical_member(n.practice_id))
++);
++
++grant select, insert, update, delete on clinical_notes to authenticated;
++grant select, insert on clinical_note_addenda to authenticated;
++
++-- ---------------------------------------------------------------------
++-- Intake forms
++-- ---------------------------------------------------------------------
++create table if not exists intake_submissions (
++  id               uuid primary key default gen_random_uuid(),
++  practice_id      uuid not null references practices(id) on delete cascade,
++  patient_id       uuid not null references patients(id),
++  template_key     text not null,
++  template_version int  not null,
++  template         jsonb not null,
++  title            text not null,
++  answers          jsonb not null default '{}'::jsonb,
++  consent_given    boolean not null check (consent_given),
++  consent_text     text not null,
++  signed_name      text not null check (length(btrim(signed_name)) > 1),
++  source           text not null check (source in ('in_practice', 'link')),
++  collected_by     uuid references profiles(id),
++  submitted_at     timestamptz not null default now(),
++  check (pg_column_size(answers) < 200000)
++);
++create index if not exists intake_submissions_patient_idx on intake_submissions (patient_id, submitted_at desc);
++
++create table if not exists intake_requests (
++  id            uuid primary key default gen_random_uuid(),
++  practice_id   uuid not null references practices(id) on delete cascade,
++  patient_id    uuid not null references patients(id) on delete cascade,
++  template_key  text not null,
++  title         text not null,
++  token_hash    text not null unique,
++  created_by    uuid references profiles(id),
++  created_at    timestamptz not null default now(),
++  expires_at    timestamptz not null default now() + interval '7 days',
++  submitted_at  timestamptz,
++  submission_id uuid references intake_submissions(id),
++  revoked_at    timestamptz
++);
++create index if not exists intake_requests_patient_idx on intake_requests (patient_id, created_at desc);
++
++create or replace function intake_submission_rules()
++returns trigger language plpgsql as $$
++begin
++  if tg_op <> 'INSERT' then
++    -- Care Africa removing a whole practice is the only exception.
++    -- Nobody, Care Africa included, can edit one.
++    if tg_op = 'DELETE' and current_user not in ('anon', 'authenticated') then
++      return old;
++    end if;
++    raise exception 'Submitted intake forms can''t be changed or deleted' using errcode = '42501';
++  end if;
++  if not exists (select 1 from patients where id = new.patient_id and practice_id = new.practice_id) then
++    raise exception 'That member isn''t at this practice';
++  end if;
++  new.submitted_at := now();
++  return new;
++end $$;
++
++drop trigger if exists intake_submissions_rules on intake_submissions;
++create trigger intake_submissions_rules
++  before insert or update or delete on intake_submissions
++  for each row execute function intake_submission_rules();
++
++alter table intake_submissions enable row level security;
++alter table intake_requests enable row level security;
++
++-- Answers: practitioners and admins only.
++drop policy if exists intake_submissions_read on intake_submissions;
++create policy intake_submissions_read on intake_submissions for select
++  using (auth_is_clinical_member(practice_id));
++-- Anyone on the team can hand a device to a client to fill one in.
++drop policy if exists intake_submissions_insert on intake_submissions;
++create policy intake_submissions_insert on intake_submissions for insert with check (
++  auth_is_practice_member(practice_id)
++  and practice_has_module(practice_id, 'intake')
++  and source = 'in_practice'
++  and collected_by = auth.uid()
++);
++
++drop policy if exists intake_requests_read on intake_requests;
++create policy intake_requests_read on intake_requests for select
++  using (auth_is_practice_member(practice_id));
++
++grant select, insert on intake_submissions to authenticated;
++grant select on intake_requests to authenticated;
++
++-- Which forms a member has completed, without the answers (for front desk).
++create or replace function intake_overview(p_patient uuid)
++returns table (kind text, id uuid, template_key text, title text, at timestamptz,
++               source text, status text, expires_at timestamptz)
++language plpgsql stable security definer set search_path = public as $$
++declare v_practice uuid;
++begin
++  select pt.practice_id into v_practice from patients pt where pt.id = p_patient;
++  if v_practice is null or not auth_is_practice_member(v_practice) then
++    raise exception 'Not allowed' using errcode = '42501';
++  end if;
++  return query
++    select 'submission'::text, s.id, s.template_key, s.title, s.submitted_at, s.source, 'completed'::text, null::timestamptz
++      from intake_submissions s where s.patient_id = p_patient
++    union all
++    select 'link'::text, r.id, r.template_key, r.title, r.created_at, 'link'::text,
++           case when r.revoked_at is not null then 'cancelled'
++                when r.expires_at < now() then 'expired'
++                else 'waiting' end,
++           r.expires_at
++      from intake_requests r
++     where r.patient_id = p_patient and r.submitted_at is null
++    order by 5 desc;
++end $$;
++
++-- Send a form by link. Returns the secret once; only its hash is kept.
++create or replace function create_intake_link(p_patient uuid, p_template_key text, p_title text)
++returns table (request_id uuid, token text, expires_at timestamptz)
++language plpgsql security definer set search_path = public as $$
++declare
++  v_practice uuid;
++  v_token text := replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '');
++  v_id uuid;
++  v_exp timestamptz;
++begin
++  select practice_id into v_practice from patients where id = p_patient;
++  if v_practice is null or not auth_is_practice_member(v_practice) then
++    raise exception 'Not allowed' using errcode = '42501';
++  end if;
++  if not practice_has_module(v_practice, 'intake') then
++    raise exception 'Intake forms are switched off for this practice';
++  end if;
++  if coalesce(btrim(p_template_key), '') = '' or coalesce(btrim(p_title), '') = '' then
++    raise exception 'Choose a form';
++  end if;
++
++  -- A new link for the same form replaces an open one.
++  update intake_requests set revoked_at = now()
++   where patient_id = p_patient and template_key = p_template_key
++     and submitted_at is null and revoked_at is null;
++
++  insert into intake_requests (practice_id, patient_id, template_key, title, token_hash, created_by)
++  values (v_practice, p_patient, p_template_key, p_title, _invite_token_hash(v_token), auth.uid())
++  returning id, intake_requests.expires_at into v_id, v_exp;
++  return query select v_id, v_token, v_exp;
++end $$;
++
++-- What the public link page shows. Knowing the token is the permission.
++create or replace function get_intake_link(p_token text)
++returns jsonb language plpgsql stable security definer set search_path = public as $$
++declare r intake_requests%rowtype; p practices%rowtype; v_first text;
++begin
++  select * into r from intake_requests where token_hash = _invite_token_hash(p_token);
++  if not found then
++    return jsonb_build_object('status', 'invalid');
++  end if;
++  select * into p from practices where id = r.practice_id;
++  select coalesce(nullif(first_name, ''), split_part(full_name, ' ', 1)) into v_first
++    from patients where id = r.patient_id;
++  return jsonb_build_object(
++    'status', case when r.submitted_at is not null then 'completed'
++                   when r.revoked_at is not null then 'cancelled'
++                   when r.expires_at < now() then 'expired'
++                   else 'pending' end,
++    'template_key', r.template_key,
++    'title', r.title,
++    'first_name', v_first,
++    'practice_name', p.name,
++    'logo_url', p.logo_url,
++    'brand_primary_color', p.brand_primary_color,
++    'brand_accent_color', p.brand_accent_color,
++    'expires_at', r.expires_at
++  );
++end $$;
++
++-- The client submits from the link, without signing in.
++create or replace function submit_intake_link(
++  p_token text, p_template jsonb, p_answers jsonb, p_consent_text text, p_signed_name text
++) returns void language plpgsql security definer set search_path = public as $$
++declare r intake_requests%rowtype; v_id uuid;
++begin
++  select * into r from intake_requests where token_hash = _invite_token_hash(p_token) for update;
++  if not found then
++    raise exception 'This link isn''t valid';
++  end if;
++  if r.submitted_at is not null then
++    raise exception 'This form has already been sent. Thank you!';
++  end if;
++  if r.revoked_at is not null or r.expires_at < now() then
++    raise exception 'This link has expired. Ask the practice for a new one.';
++  end if;
++  if p_template ->> 'key' is distinct from r.template_key then
++    raise exception 'This is not the form that was sent';
++  end if;
++  if pg_column_size(p_answers) > 200000 then
++    raise exception 'The form is too large';
++  end if;
++
++  -- Shown as the actor in the activity log.
++  perform set_config('care.actor_label', 'Member, via intake link', true);
++
++  insert into intake_submissions (practice_id, patient_id, template_key, template_version, template,
++                                  title, answers, consent_given, consent_text, signed_name, source)
++  values (r.practice_id, r.patient_id, r.template_key, coalesce((p_template ->> 'version')::int, 1), p_template,
++          r.title, coalesce(p_answers, '{}'::jsonb), true, coalesce(p_consent_text, ''), btrim(p_signed_name), 'link')
++  returning id into v_id;
++
++  update intake_requests set submitted_at = now(), submission_id = v_id where id = r.id;
++end $$;
++
++revoke execute on function intake_overview(uuid) from public;
++revoke execute on function create_intake_link(uuid, text, text) from public;
++revoke execute on function get_intake_link(text) from public;
++revoke execute on function submit_intake_link(text, jsonb, jsonb, text, text) from public;
++grant execute on function intake_overview(uuid) to authenticated;
++grant execute on function create_intake_link(uuid, text, text) to authenticated;
++grant execute on function get_intake_link(text) to anon, authenticated;
++grant execute on function submit_intake_link(text, jsonb, jsonb, text, text) to anon, authenticated;
++
++-- ---------------------------------------------------------------------
++-- Activity log (0009): who is the actor for link submissions
++-- ---------------------------------------------------------------------
++create or replace function _audit_write(
++  p_practice       uuid,
++  p_category       text,
++  p_action         text,
++  p_description    text,
++  p_patient        uuid  default null,
++  p_target_profile uuid  default null,
++  p_entity_type    text  default null,
++  p_entity_id      text  default null,
++  p_details        jsonb default '{}'::jsonb,
++  p_source         text  default 'database'
++) returns void language plpgsql security definer set search_path = public as $$
++declare
++  v_uid     uuid := auth.uid();
++  v_email   text;
++  v_role    text;
++  v_label   text := nullif(current_setting('care.actor_label', true), '');
++  v_headers json;
++begin
++  if v_uid is not null then
++    select email into v_email from profiles where id = v_uid;
++    select role::text into v_role from practice_members
++     where profile_id = v_uid and practice_id = p_practice;
++  end if;
++
++  begin
++    v_headers := nullif(current_setting('request.headers', true), '')::json;
++  exception when others then
++    v_headers := null;
++  end;
++
++  insert into audit_log (practice_id, actor_id, actor_email, actor_role, category, action,
++                         description, patient_id, target_profile_id, entity_type, entity_id,
++                         details, ip, user_agent, source)
++  values (p_practice, v_uid,
++          coalesce(v_email, v_label, case when v_uid is null then 'Care Africa' end),
++          v_role, p_category, p_action, p_description, p_patient, p_target_profile,
++          p_entity_type, p_entity_id, coalesce(p_details, '{}'::jsonb),
++          nullif(btrim(split_part(coalesce(v_headers ->> 'x-forwarded-for', ''), ',', 1)), ''),
++          left(v_headers ->> 'user-agent', 300),
++          p_source);
++end $$;
++revoke execute on function _audit_write(uuid, text, text, text, uuid, uuid, text, text, jsonb, text) from public, anon, authenticated;
++
++-- The activity view shows that label instead of "Care Africa".
++create or replace function get_activity(
++  p_practice uuid,
++  p_category text   default null,
++  p_actor    uuid   default null,
++  p_search   text   default null,
++  p_before   bigint default null,
++  p_limit    int    default 50
++) returns table (
++  id bigint, occurred_at timestamptz, category text, action text, description text,
++  actor_id uuid, actor_name text, actor_email text, actor_role text,
++  patient_id uuid, patient_name text, target_name text,
++  details jsonb, ip text, user_agent text, source text
++) language plpgsql stable security definer set search_path = public as $$
++begin
++  if not auth_is_practice_admin(p_practice) then
++    raise exception 'Only a practice admin can see the activity log' using errcode = '42501';
++  end if;
++
++  return query
++  select a.id, a.occurred_at, a.category, a.action, a.description,
++         a.actor_id,
++         coalesce(nullif(ap.full_name, ''), a.actor_email, 'Care Africa'),
++         a.actor_email, a.actor_role,
++         a.patient_id,
++         coalesce(nullif(pt.full_name, ''), nullif(btrim(concat_ws(' ', pt.first_name, pt.last_name)), ''),
++                  case when a.patient_id is not null then 'Deleted member' end),
++         coalesce(nullif(tp.full_name, ''), tp.email),
++         a.details, a.ip, a.user_agent, a.source
++    from audit_log a
++    left join profiles ap on ap.id = a.actor_id
++    left join patients pt on pt.id = a.patient_id and pt.practice_id = a.practice_id
++    left join profiles tp on tp.id = a.target_profile_id
++   where a.practice_id = p_practice
++     and (p_category is null or a.category = p_category)
++     and (p_actor is null or a.actor_id = p_actor)
++     and (p_before is null or a.id < p_before)
++     and (p_search is null or p_search = ''
++          or a.description ilike '%' || p_search || '%'
++          or coalesce(pt.full_name, concat_ws(' ', pt.first_name, pt.last_name)) ilike '%' || p_search || '%'
++          or coalesce(ap.full_name, a.actor_email) ilike '%' || p_search || '%')
++   order by a.id desc
++   limit least(greatest(coalesce(p_limit, 50), 1), 500);
++end $$;
++
++-- Record these tables too. Answers and template content are never copied.
++do $$
++declare
++  spec text[];
++  specs text[][] := array[
++    array['clinical_notes',        'clinical', 'clinical note',        'status,title',  'answers,template,signed_at,signed_by', 'Started'],
++    array['clinical_note_addenda', 'clinical', 'addendum to a note',   '',              '',                                     'Added'],
++    array['intake_submissions',    'clinical', 'intake form',          'title,source',  '',                                     'Received'],
++    array['intake_requests',       'members',  'intake form link',     'title',         'submission_id',                        'Sent']
++  ];
++begin
++  foreach spec slice 1 in array specs loop
++    execute format('drop trigger if exists audit_changes on %I', spec[1]);
++    execute format(
++      'create trigger audit_changes after insert or update or delete on %I
++         for each row execute function audit_row_change(%L, %L, %L, %L, %L)',
++      spec[1], spec[2], spec[3], spec[4], spec[5], spec[6]);
++  end loop;
++end $$;
++
++commit;
+diff --git a/supabase/tests/clinical_records_test.sql b/supabase/tests/clinical_records_test.sql
+new file mode 100644
+index 0000000..febc795
+--- /dev/null
++++ b/supabase/tests/clinical_records_test.sql
+@@ -0,0 +1,252 @@
++-- =====================================================================
++-- Care Africa — tests for 0010 (clinical notes and intake forms)
++-- =====================================================================
++--   psql "$DATABASE_URL" -f supabase/tests/clinical_records_test.sql
++-- Seeds data, asserts, then rolls back.
++-- =====================================================================
++
++begin;
++
++grant usage on schema public to authenticated, anon;
++grant all on all tables in schema public to authenticated;
++revoke insert, update, delete, truncate on audit_log from authenticated;
++revoke update, delete on intake_submissions from authenticated;
++revoke update, delete on clinical_note_addenda from authenticated;
++
++create or replace function _assert(label text, actual text, expected text)
++returns void language plpgsql as $$
++begin
++  if actual is distinct from expected then
++    raise exception 'FAIL  %  got[%] want[%]', label, actual, expected;
++  end if;
++  raise notice 'pass  %', label;
++end $$;
++
++create or replace function _as(actor uuid) returns void language plpgsql as $$
++begin
++  if actor is null then
++    perform set_config('request.jwt.claim.sub', '', true);
++    perform set_config('request.jwt.claims', '', true);
++    perform set_config('role', 'anon', true);
++  else
++    perform set_config('request.jwt.claim.sub', actor::text, true);
++    perform set_config('request.jwt.claims', json_build_object('sub', actor, 'aal', 'aal2')::text, true);
++    perform set_config('role', 'authenticated', true);
++  end if;
++end $$;
++
++create or replace function _done() returns void language plpgsql as $$
++begin
++  perform set_config('role', 'postgres', true);
++  perform set_config('request.jwt.claim.sub', '', true);
++  perform set_config('request.jwt.claims', '', true);
++  perform set_config('care.actor_label', '', true);
++end $$;
++
++create or replace function _try(actor uuid, q text) returns text language plpgsql as $$
++begin
++  perform _as(actor); execute q; perform _done(); return 'ok';
++exception when others then perform _done(); return sqlerrm;
++end $$;
++
++create or replace function _read(actor uuid, q text) returns text language plpgsql as $$
++declare out text;
++begin
++  perform _as(actor); execute q into out; perform _done(); return coalesce(out, '');
++exception when others then perform _done(); return 'ERROR: ' || sqlerrm;
++end $$;
++
++-- People: a1 admin, d1 + d2 practitioners, f1 front desk; x1 another practice's admin
++insert into auth.users (id, email, raw_user_meta_data) values
++  ('00000000-0000-0000-0000-0000000000a1', 'admin@glow.test', '{"practice_name":"Glow IV Lounge"}'),
++  ('00000000-0000-0000-0000-0000000000d1', 'nurse@glow.test', '{"full_name":"Sister Dube"}'),
++  ('00000000-0000-0000-0000-0000000000d2', 'doc@glow.test',   '{"full_name":"Dr Pillay"}'),
++  ('00000000-0000-0000-0000-0000000000f1', 'desk@glow.test',  '{"full_name":"Front Desk"}'),
++  ('00000000-0000-0000-0000-0000000000e1', 'x@other.test',    '{"practice_name":"Other"}');
++select set_config('t.p', (select practice_id::text from practice_members where profile_id = '00000000-0000-0000-0000-0000000000a1'), false);
++select set_config('t.x', (select practice_id::text from practice_members where profile_id = '00000000-0000-0000-0000-0000000000e1'), false);
++insert into practice_members (practice_id, profile_id, role) values
++  (current_setting('t.p')::uuid, '00000000-0000-0000-0000-0000000000d1', 'doctor'),
++  (current_setting('t.p')::uuid, '00000000-0000-0000-0000-0000000000d2', 'doctor'),
++  (current_setting('t.p')::uuid, '00000000-0000-0000-0000-0000000000f1', 'staff');
++insert into patients (id, practice_id, first_name, last_name) values
++  ('00000000-0000-0000-0000-00000000aaaa', current_setting('t.p')::uuid, 'Thandi', 'Mokoena'),
++  ('00000000-0000-0000-0000-00000000bbbb', current_setting('t.x')::uuid, 'Other', 'Person');
++
++create temp table t (k text primary key, v text);
++grant all on t to authenticated, anon;
++
++-- A note, as SQL, by a given author
++create or replace function _note_sql(p_id text) returns text language sql as $$
++  select format($q$insert into clinical_notes (id, practice_id, patient_id, author_id, template_key, template_version, template, title, answers)
++                   values (%L, %L, %L, auth.uid(), 'soap_consultation', 1, '{"key":"soap_consultation"}', 'General consultation',
++                           '{"subjective":"Headache for 3 days","assessment":"Tension headache"}')$q$,
++                p_id, current_setting('t.p'), '00000000-0000-0000-0000-00000000aaaa');
++$$;
++
++-- ---------------------------------------------------------------------
++-- Modules
++-- ---------------------------------------------------------------------
++update practices set clinical_records = 'intake' where id = current_setting('t.p')::uuid;
++select _assert('with intake forms only, no clinical notes can be written',
++  (_try('00000000-0000-0000-0000-0000000000d1', _note_sql('00000000-0000-0000-0000-0000000000c1')) like '%row-level security%')::text, 'true');
++update practices set clinical_records = 'full' where id = current_setting('t.p')::uuid;
++
++-- ---------------------------------------------------------------------
++-- Clinical notes
++-- ---------------------------------------------------------------------
++select _assert('front desk cannot write clinical notes',
++  (_try('00000000-0000-0000-0000-0000000000f1', _note_sql('00000000-0000-0000-0000-0000000000c1')) like '%row-level security%')::text, 'true');
++select _assert('a practitioner starts a note',
++  _try('00000000-0000-0000-0000-0000000000d1', _note_sql('00000000-0000-0000-0000-0000000000c1')), 'ok');
++select _assert('a note for another practice''s member is refused',
++  _try('00000000-0000-0000-0000-0000000000d1',
++    replace(_note_sql('00000000-0000-0000-0000-0000000000c2'), '00000000-0000-0000-0000-00000000aaaa', '00000000-0000-0000-0000-00000000bbbb')),
++  'That member isn''t at this practice');
++
++select _assert('drafts are private: another practitioner can''t see it',
++  _read('00000000-0000-0000-0000-0000000000d2', 'select count(*)::text from clinical_notes'), '0');
++select _assert('drafts are private: nor can the admin',
++  _read('00000000-0000-0000-0000-0000000000a1', 'select count(*)::text from clinical_notes'), '0');
++select _assert('the author can edit their draft',
++  _try('00000000-0000-0000-0000-0000000000d1',
++    $q$update clinical_notes set answers = answers || '{"plan":"Rest, fluids"}' where id = '00000000-0000-0000-0000-0000000000c1'$q$), 'ok');
++
++select _try('00000000-0000-0000-0000-0000000000d1',
++  $q$update clinical_notes set status = 'signed' where id = '00000000-0000-0000-0000-0000000000c1'$q$);
++select _assert('signing stamps who and when',
++  (select (signed_by = '00000000-0000-0000-0000-0000000000d1' and signed_at is not null)::text
++     from clinical_notes where id = '00000000-0000-0000-0000-0000000000c1'), 'true');
++select _assert('a signed note is visible to other practitioners',
++  _read('00000000-0000-0000-0000-0000000000d2', 'select count(*)::text from clinical_notes'), '1');
++select _assert('and to the admin',
++  _read('00000000-0000-0000-0000-0000000000a1', 'select count(*)::text from clinical_notes'), '1');
++select _assert('front desk still can''t see it',
++  _read('00000000-0000-0000-0000-0000000000f1', 'select count(*)::text from clinical_notes'), '0');
++
++-- The policy only offers drafts for update, so a signed note simply isn't changed...
++select _try('00000000-0000-0000-0000-0000000000d1',
++  $q$update clinical_notes set answers = '{"assessment":"Migraine"}' where id = '00000000-0000-0000-0000-0000000000c1'$q$);
++select _assert('a signed note can''t be changed by its author',
++  (select answers ->> 'assessment' from clinical_notes where id = '00000000-0000-0000-0000-0000000000c1'), 'Tension headache');
++-- ...and even Care Africa is stopped by the trigger.
++do $$ begin
++  update clinical_notes set answers = '{}' where id = '00000000-0000-0000-0000-0000000000c1';
++  raise exception 'should not reach';
++exception when others then perform set_config('t.err', sqlerrm, true); end $$;
++select _assert('not even directly in the database',
++  current_setting('t.err'), 'Signed notes can''t be changed. Add an addendum instead.');
++
++select _try('00000000-0000-0000-0000-0000000000d1',
++  $q$delete from clinical_notes where id = '00000000-0000-0000-0000-0000000000c1'$q$);
++select _assert('a signed note can''t be deleted',
++  (select count(*)::text from clinical_notes where id = '00000000-0000-0000-0000-0000000000c1'), '1');
++
++-- Addenda
++select _assert('another practitioner adds an addendum',
++  _try('00000000-0000-0000-0000-0000000000d2',
++    format('insert into clinical_note_addenda (note_id, author_id, reason, body) values (%L, auth.uid(), %L, %L)',
++      '00000000-0000-0000-0000-0000000000c1', 'Lab result received', 'Bloods normal')), 'ok');
++select _assert('the addendum is filed against the right member',
++  (select patient_id::text from clinical_note_addenda limit 1), '00000000-0000-0000-0000-00000000aaaa');
++select _assert('an addendum needs a reason',
++  (_try('00000000-0000-0000-0000-0000000000d2',
++    format('insert into clinical_note_addenda (note_id, author_id, reason, body) values (%L, auth.uid(), %L, %L)',
++      '00000000-0000-0000-0000-0000000000c1', ' ', 'x')) like '%check constraint%')::text, 'true');
++select _try('00000000-0000-0000-0000-0000000000d1', _note_sql('00000000-0000-0000-0000-0000000000c3'));
++select _assert('drafts can''t get addenda',
++  _try('00000000-0000-0000-0000-0000000000d1',
++    format('insert into clinical_note_addenda (note_id, author_id, reason, body) values (%L, auth.uid(), %L, %L)',
++      '00000000-0000-0000-0000-0000000000c3', 'x', 'y')), 'Addenda can only be added to a signed note');
++select _assert('front desk can''t add addenda',
++  _try('00000000-0000-0000-0000-0000000000f1',
++    format('insert into clinical_note_addenda (note_id, author_id, reason, body) values (%L, auth.uid(), %L, %L)',
++      '00000000-0000-0000-0000-0000000000c1', 'x', 'y')), 'Not allowed');
++select _assert('the author can delete a draft',
++  _try('00000000-0000-0000-0000-0000000000d1', $q$delete from clinical_notes where id = '00000000-0000-0000-0000-0000000000c3'$q$), 'ok');
++select _assert('(it is gone)',
++  (select count(*)::text from clinical_notes where id = '00000000-0000-0000-0000-0000000000c3'), '0');
++
++-- ---------------------------------------------------------------------
++-- Intake forms on a practice device
++-- ---------------------------------------------------------------------
++create or replace function _intake_sql(consent boolean) returns text language sql as $$
++  select format($q$insert into intake_submissions (practice_id, patient_id, template_key, template_version, template, title,
++                     answers, consent_given, consent_text, signed_name, source, collected_by)
++                   values (%L, %L, 'general_health', 1, '{"key":"general_health"}', 'Health questionnaire',
++                           '{"allergies":{"answer":"yes","details":"Penicillin"}}', %L, 'I agree', 'Thandi Mokoena', 'in_practice', auth.uid())$q$,
++                current_setting('t.p'), '00000000-0000-0000-0000-00000000aaaa', consent);
++$$;
++select _assert('front desk hands a tablet over and the form is saved',
++  _try('00000000-0000-0000-0000-0000000000f1', _intake_sql(true)), 'ok');
++select _assert('consent is required',
++  (_try('00000000-0000-0000-0000-0000000000f1', _intake_sql(false)) like '%check constraint%')::text, 'true');
++select _assert('front desk can''t read the answers',
++  _read('00000000-0000-0000-0000-0000000000f1', 'select count(*)::text from intake_submissions'), '0');
++select _assert('but can see that it was completed',
++  _read('00000000-0000-0000-0000-0000000000f1',
++    format('select status || '' / '' || title from intake_overview(%L)', '00000000-0000-0000-0000-00000000aaaa')),
++  'completed / Health questionnaire');
++select _assert('a practitioner can read the answers',
++  _read('00000000-0000-0000-0000-0000000000d1', 'select answers -> ''allergies'' ->> ''details'' from intake_submissions'), 'Penicillin');
++do $$ begin
++  update intake_submissions set answers = '{}';
++  raise exception 'should not reach';
++exception when others then perform set_config('t.err', sqlerrm, true); end $$;
++select _assert('a submitted form can''t be changed',
++  current_setting('t.err'), 'Submitted intake forms can''t be changed or deleted');
++
++-- ---------------------------------------------------------------------
++-- Intake forms by link
++-- ---------------------------------------------------------------------
++select _try('00000000-0000-0000-0000-0000000000f1',
++  format('insert into t select %L, token from create_intake_link(%L, %L, %L)', 'link',
++    '00000000-0000-0000-0000-00000000aaaa', 'iv_pretreatment', 'Before your drip'));
++select _assert('front desk sends a link',
++  (select count(*)::text from intake_requests where patient_id = '00000000-0000-0000-0000-00000000aaaa'), '1');
++select _assert('only a hash of the link is kept',
++  (select count(*)::text from intake_requests r join t on r.token_hash = t.v), '0');
++select _assert('the link page greets the member and shows the practice',
++  _read(null, format('select ((get_intake_link(%L)) ->> %L) || %L || ((get_intake_link(%L)) ->> %L)',
++    (select v from t where k = 'link'), 'first_name', ' @ ', (select v from t where k = 'link'), 'practice_name')),
++  'Thandi @ Glow IV Lounge');
++select _assert('the wrong form is refused',
++  _try(null, format('select submit_intake_link(%L, %L, %L, %L, %L)', (select v from t where k = 'link'),
++    '{"key":"general_health","version":1}', '{}', 'I agree', 'Thandi Mokoena')),
++  'This is not the form that was sent');
++select _assert('the member submits without signing in',
++  _try(null, format('select submit_intake_link(%L, %L, %L, %L, %L)', (select v from t where k = 'link'),
++    '{"key":"iv_pretreatment","version":1}', '{"pregnant":{"answer":"no"}}', 'I agree', 'Thandi Mokoena')), 'ok');
++select _assert('a link works once',
++  _try(null, format('select submit_intake_link(%L, %L, %L, %L, %L)', (select v from t where k = 'link'),
++    '{"key":"iv_pretreatment","version":1}', '{}', 'I agree', 'Thandi Mokoena')),
++  'This form has already been sent. Thank you!');
++select _assert('the activity log shows it came from the member''s link',
++  (select actor_email from audit_log where action = 'intake_submissions.insert' and source = 'database' order by id desc limit 1),
++  'Member, via intake link');
++select _assert('a stranger cannot send links for our members',
++  _try('00000000-0000-0000-0000-0000000000e1',
++    format('select create_intake_link(%L, %L, %L)', '00000000-0000-0000-0000-00000000aaaa', 'general_health', 'x')), 'Not allowed');
++
++update practices set clinical_records = 'off' where id = current_setting('t.p')::uuid;
++select _assert('with clinical records off, no intake forms',
++  _try('00000000-0000-0000-0000-0000000000f1',
++    format('select create_intake_link(%L, %L, %L)', '00000000-0000-0000-0000-00000000aaaa', 'general_health', 'x')),
++  'Intake forms are switched off for this practice');
++
++-- ---------------------------------------------------------------------
++-- Activity log and retention
++-- ---------------------------------------------------------------------
++select _assert('clinical content never enters the activity log',
++  (select (string_agg(description || details::text, ' ') ~* 'headache|penicillin|fluids|bloods')::text from audit_log), 'false');
++select _assert('signing is in the activity log',
++  (select count(*)::text from audit_log where action = 'clinical_notes.update' and description like '%status draft → signed%'), '1');
++select _assert('a member with clinical records can''t be deleted',
++  (_try('00000000-0000-0000-0000-0000000000a1',
++    $q$delete from patients where id = '00000000-0000-0000-0000-00000000aaaa'$q$) like '%foreign key%')::text, 'true');
++
++delete from practices where id = current_setting('t.p')::uuid;
++select _assert('Care Africa can still remove a whole practice',
++  (select count(*)::text from practices where id = current_setting('t.p')::uuid), '0');
++
++rollback;
+-- 
+2.43.0
+

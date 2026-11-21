@@ -11,6 +11,7 @@ import AddAppointmentModal from "../Appointment/AddAppointmentModal";
 import { Patient } from '@/types/patient';
 import { useEffect } from 'react';
 import { logRecordView } from '@/lib/audit';
+import { MemberHealthForms } from '@/components/intake/MemberHealthForms';
 import type { Appointment } from '@/types/appointment';
 
 interface ViewPatientModalProps {
@@ -120,6 +121,8 @@ export default function ViewPatientModal({ patient, appointments, isOpen, onClos
                 </div>
               </div>
             </Card>
+
+            <MemberHealthForms patient={patient} />
 
             {/* Tabs Section */}
             <Tabs defaultValue="appointments" className="w-full">

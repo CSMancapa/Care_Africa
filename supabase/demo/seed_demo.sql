@@ -76,6 +76,11 @@ begin
   end if;
 
   -- ---------- wipe this practice's demo data -------------------------
+  -- Clinical records first (only Care Africa can remove these; needs 0010).
+  delete from clinical_note_addenda where practice_id = v_practice;
+  delete from clinical_notes        where practice_id = v_practice;
+  delete from intake_requests       where practice_id = v_practice;
+  delete from intake_submissions    where practice_id = v_practice;
   delete from reward_claims    where practice_id = v_practice;
   delete from orders           where practice_id = v_practice;
   delete from appointments     where practice_id = v_practice;

@@ -92,7 +92,7 @@ export function DashboardSidebar() {
   };
 
   return (
-    <aside className="fixed left-0 top-0 z-30 flex h-screen w-64 flex-col border-r border-border bg-card">
+    <aside className="fixed left-0 top-0 z-30 flex h-screen w-64 flex-col border-r border-border bg-card print:hidden">
       {/* Practice identity, in the practice's own colours */}
       <div className="px-4 pt-5 pb-4">
         <div className="relative flex items-center gap-3 rounded-xl border border-border bg-background/60 p-2.5">

@@ -20,6 +20,10 @@ import TwoStepSetup from "./pages/TwoStepSetup";
 import TwoStepVerify from "./pages/TwoStepVerify";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
+import ClinicalRecord from "./pages/ClinicalRecord";
+import ClinicalNote from "./pages/ClinicalNote";
+import IntakeOnDevice from "./pages/IntakeOnDevice";
+import IntakeByLink from "./pages/IntakeByLink";
 import AuthCallback from './pages/AuthCallback';
 import { PracticeProvider, usePractice } from "./context/PracticeContext";
 import { ConfigProvider } from "antd";
@@ -76,6 +80,11 @@ const App = () => (
           <Route path="/two-step/verify" element={<TwoStepVerify />} />
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password" element={<ResetPassword />} />
+          <Route path="/intake/:token" element={<IntakeByLink />} />
+          <Route path="/patients/:patientId/record" element={<ProtectedRoute><ClinicalRecord /></ProtectedRoute>} />
+          <Route path="/patients/:patientId/notes/new" element={<ProtectedRoute><ClinicalNote /></ProtectedRoute>} />
+          <Route path="/patients/:patientId/notes/:noteId" element={<ProtectedRoute><ClinicalNote /></ProtectedRoute>} />
+          <Route path="/patients/:patientId/intake/new" element={<ProtectedRoute><IntakeOnDevice /></ProtectedRoute>} />
           {/* Protected routes */}
           <Route path="/" element={
             <ProtectedRoute>
