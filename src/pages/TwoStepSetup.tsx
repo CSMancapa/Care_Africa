@@ -10,6 +10,7 @@ import { CodeInput } from "@/components/twostep/CodeInput";
 import { RecoveryCodesPanel } from "@/components/twostep/RecoveryCodesPanel";
 import { usePractice } from "@/context/PracticeContext";
 import { clearTwoStepCache, makeRecoveryCodes, qrImageSrc, verifyAuthenticatorCode } from "@/lib/twoStep";
+import { logAuthEvent } from "@/lib/audit";
 import { cn } from "@/lib/utils";
 
 type Step = "intro" | "scan" | "codes";
@@ -94,6 +95,7 @@ export default function TwoStepSetup() {
   };
 
   const finish = async () => {
+    logAuthEvent("two_step_set_up");
     clearTwoStepCache();
     await refresh();
     toast.success("Two-step sign-in is on");

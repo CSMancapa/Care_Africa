@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { CodeInput } from "@/components/twostep/CodeInput";
 import { usePractice } from "@/context/PracticeContext";
 import { verifyAuthenticatorCode, verifyRecoveryCode } from "@/lib/twoStep";
+import { logAuthEvent } from "@/lib/audit";
 
 /**
  * The second step of signing in. Also used inside the password reset page
@@ -26,10 +27,15 @@ export function TwoStepChallenge({ onDone }: { onDone: () => void }) {
     e.preventDefault();
     setBusy(true);
     try {
-      if (useRecovery) await verifyRecoveryCode(recovery);
-      else await verifyAuthenticatorCode(code);
+      if (useRecovery) {
+        await verifyRecoveryCode(recovery);
+        logAuthEvent("recovery_code_used");
+      } else {
+        await verifyAuthenticatorCode(code);
+      }
       onDone();
     } catch (error) {
+      logAuthEvent("two_step_failed");
       toast.error(error instanceof Error ? error.message : "That code didn't work");
       setCode("");
     } finally {

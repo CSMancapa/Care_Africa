@@ -3,6 +3,7 @@ import { Navigate, useLocation } from "react-router-dom";
 import { supabase } from "@/config/supabase";
 import { Loader2 } from "lucide-react";
 import { getTwoStepStatus, type TwoStepStatus } from "@/lib/twoStep";
+import { logSignInOnce } from "@/lib/audit";
 
 /**
  * Lets someone in only when they're signed in AND have done two-step
@@ -22,6 +23,7 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
         return;
       }
       const status = await getTwoStepStatus();
+      if (status === "ok") logSignInOnce();
       if (!cancelled) setState(status);
     };
 

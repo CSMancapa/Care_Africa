@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { RecoveryCodesPanel } from "@/components/twostep/RecoveryCodesPanel";
 import { getAuthenticator, getRecoveryCodesStatus, makeRecoveryCodes } from "@/lib/twoStep";
+import { logAuthEvent } from "@/lib/audit";
 
 /** Settings → My security: the signed-in person's own login. */
 export function MySecuritySettings() {
@@ -53,6 +54,7 @@ export function MySecuritySettings() {
         return;
       }
       setNewCodes(result.codes);
+      logAuthEvent("recovery_codes_renewed");
       load();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Couldn't make new codes");
@@ -69,6 +71,7 @@ export function MySecuritySettings() {
     try {
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
+      logAuthEvent("password_changed");
       setPassword("");
       setConfirm("");
       toast.success("Password changed");

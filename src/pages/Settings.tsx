@@ -17,6 +17,7 @@ import { BrandingSettings } from '@/components/Settings/BrandingSettings';
 import { ModulesSettings } from '@/components/Settings/ModulesSettings';
 import { TeamSettings } from '@/components/Settings/TeamSettings';
 import { MySecuritySettings } from '@/components/Settings/MySecuritySettings';
+import { ActivityLog } from '@/components/Settings/ActivityLog';
 import { PRACTICE_TYPES, PRACTICE_TYPE_GROUPS } from '@/lib/practiceTypes';
 import { useModules } from '@/lib/modules';
 import { usePractice } from '@/context/PracticeContext';
@@ -60,6 +61,7 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [practiceData, setPracticeData] = useState<PracticeData | null>(null);
   const { showsMedicalAids } = useModules();
+  const isPracticeAdmin = practice?.role === "practice_admin";
 
   useEffect(() => {
     if (practiceLoading) return;
@@ -143,11 +145,12 @@ export default function Settings() {
         </div>
 
         <Tabs defaultValue="general" className="space-y-6">
-          <TabsList className="bg-white border-b border-gray-200 w-full justify-start space-x-8 px-4">
+          <TabsList className="h-auto w-full flex-wrap justify-start gap-1 rounded-xl border border-border bg-card p-1.5">
             <TabsTrigger value="general">General</TabsTrigger>
             <TabsTrigger value="hours">Business Hours</TabsTrigger>
             <TabsTrigger value="team">Team</TabsTrigger>
             <TabsTrigger value="security">My security</TabsTrigger>
+            {isPracticeAdmin && <TabsTrigger value="activity">Activity log</TabsTrigger>}
             <TabsTrigger value="modules">Modules</TabsTrigger>
             <TabsTrigger value="services">{showsMedicalAids ? 'Services & Medical Aids' : 'Services'}</TabsTrigger>
             <TabsTrigger value="rewards">Rewards Program</TabsTrigger>
@@ -161,6 +164,10 @@ export default function Settings() {
               onSave={(data) => runSave((id) => saveGeneral(id, data), true)}
               saving={saving}
             />
+          </TabsContent>
+
+          <TabsContent value="activity">
+            <ActivityLog />
           </TabsContent>
 
           <TabsContent value="security">

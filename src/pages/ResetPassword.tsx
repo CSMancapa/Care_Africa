@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { TwoStepChallenge } from "@/pages/TwoStepVerify";
 import { clearTwoStepCache } from "@/lib/twoStep";
+import { logAuthEvent } from "@/lib/audit";
 import { usePractice } from "@/context/PracticeContext";
 
 type Stage = "checking" | "invalid" | "challenge" | "password";
@@ -62,6 +63,7 @@ export default function ResetPassword() {
     try {
       const { error } = await supabase.auth.updateUser({ password });
       if (error) throw error;
+      logAuthEvent("password_changed");
       clearTwoStepCache();
       await refresh();
       toast.success("Password changed");

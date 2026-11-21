@@ -1,0 +1,1447 @@
+From 19c09d0c0c2dccde5bb11222392142b2b2effa3e Mon Sep 17 00:00:00 2001
+From: Care Africa <dev@careafrica.local>
+Date: Sat, 21 Nov 2026 14:16:25 +0200
+Subject: [PATCH] Audit log (Activity log)
+
+- Migration 0009: append-only audit_log (no edits or deletes, even by Care
+  Africa); database triggers record clinical records (fields only, never
+  content), members, team, invitations, settings and modules, services,
+  practitioners, products, rewards, sales, claims and appointments; 2FA
+  resets; IP and device kept
+- App-reported events: sign-ins (once per session), wrong two-step codes,
+  recovery codes used, 2FA set up, new recovery codes, password changes,
+  opening a member profile, exports
+- Settings > Activity log (admins): by day, search, filter by type and
+  person, expandable detail, CSV export (itself logged)
+- Fixes: member profile crashed when date of birth was missing; Settings
+  tabs now wrap
+- Tests: 30 new database checks (165 in total)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EwPyWPTXSAWwnbXCzMZAVM
+---
+ src/components/Patient/ViewPatientModal.tsx   |  18 +-
+ src/components/ProtectedRoute.tsx             |   2 +
+ src/components/Settings/ActivityLog.tsx       | 370 ++++++++++++++
+ .../Settings/MySecuritySettings.tsx           |   3 +
+ src/lib/audit.ts                              |  60 +++
+ src/lib/db/activity.ts                        |  42 ++
+ src/pages/ResetPassword.tsx                   |   2 +
+ src/pages/Settings.tsx                        |   9 +-
+ src/pages/TwoStepSetup.tsx                    |   2 +
+ src/pages/TwoStepVerify.tsx                   |  10 +-
+ supabase/migrations/0009_audit_log.sql        | 473 ++++++++++++++++++
+ supabase/tests/audit_log_test.sql             | 212 ++++++++
+ 12 files changed, 1196 insertions(+), 7 deletions(-)
+ create mode 100644 src/components/Settings/ActivityLog.tsx
+ create mode 100644 src/lib/audit.ts
+ create mode 100644 src/lib/db/activity.ts
+ create mode 100644 supabase/migrations/0009_audit_log.sql
+ create mode 100644 supabase/tests/audit_log_test.sql
+
+diff --git a/src/components/Patient/ViewPatientModal.tsx b/src/components/Patient/ViewPatientModal.tsx
+index f44c7e8..96e1612 100644
+--- a/src/components/Patient/ViewPatientModal.tsx
++++ b/src/components/Patient/ViewPatientModal.tsx
+@@ -9,6 +9,8 @@ import { X } from "lucide-react";
+ import { useState } from "react";
+ import AddAppointmentModal from "../Appointment/AddAppointmentModal";
+ import { Patient } from '@/types/patient';
++import { useEffect } from 'react';
++import { logRecordView } from '@/lib/audit';
+ import type { Appointment } from '@/types/appointment';
+ 
+ interface ViewPatientModalProps {
+@@ -18,11 +20,19 @@ interface ViewPatientModalProps {
+   onClose: () => void;
+ }
+ 
+-const formatDate = (date: string) => {
+-  return format(new Date(date), 'PP');
++// Members may have no date of birth on file; don't crash the profile.
++const formatDate = (date?: string | null) => {
++  if (!date) return 'Not recorded';
++  const d = new Date(date);
++  return isNaN(d.getTime()) ? 'Not recorded' : format(d, 'd MMM yyyy');
+ };
+ 
+ export default function ViewPatientModal({ patient, appointments, isOpen, onClose }: ViewPatientModalProps) {
++  // Opening a member's profile is recorded in the activity log.
++  useEffect(() => {
++    if (isOpen && patient?.id) logRecordView(patient.id, 'member_profile');
++  }, [isOpen, patient?.id]);
++
+   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+   
+ 
+@@ -133,7 +143,7 @@ export default function ViewPatientModal({ patient, appointments, isOpen, onClos
+                         >
+                           <div>
+                             <p className="font-medium">
+-                              {appointment.time ? format(new Date(appointment.time), 'PPP') : 'No date'}
++                              {appointment.time ? format(new Date(appointment.time), 'd MMMM yyyy') : 'No date'}
+                             </p>
+                             <p className="text-sm text-muted-foreground">{appointment.patient}</p>
+                           </div>
+@@ -195,7 +205,7 @@ export default function ViewPatientModal({ patient, appointments, isOpen, onClos
+                                 Code: {claim.redemption_code}
+                               </p>
+                               <p className="text-sm text-muted-foreground">
+-                                {format(new Date(claim.claimed_at), 'PPp')}
++                                {claim.claimed_at ? format(new Date(claim.claimed_at), 'd MMM yyyy, HH:mm') : ''}
+                               </p>
+                             </div>
+                           </div>
+diff --git a/src/components/ProtectedRoute.tsx b/src/components/ProtectedRoute.tsx
+index 2c1aa74..d9649e1 100644
+--- a/src/components/ProtectedRoute.tsx
++++ b/src/components/ProtectedRoute.tsx
+@@ -3,6 +3,7 @@ import { Navigate, useLocation } from "react-router-dom";
+ import { supabase } from "@/config/supabase";
+ import { Loader2 } from "lucide-react";
+ import { getTwoStepStatus, type TwoStepStatus } from "@/lib/twoStep";
++import { logSignInOnce } from "@/lib/audit";
+ 
+ /**
+  * Lets someone in only when they're signed in AND have done two-step
+@@ -22,6 +23,7 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
+         return;
+       }
+       const status = await getTwoStepStatus();
++      if (status === "ok") logSignInOnce();
+       if (!cancelled) setState(status);
+     };
+ 
+diff --git a/src/components/Settings/ActivityLog.tsx b/src/components/Settings/ActivityLog.tsx
+new file mode 100644
+index 0000000..ee4c66c
+--- /dev/null
++++ b/src/components/Settings/ActivityLog.tsx
+@@ -0,0 +1,370 @@
++import { useCallback, useEffect, useMemo, useRef, useState } from "react";
++import { toast } from "sonner";
++import { format, isToday, isYesterday } from "date-fns";
++import {
++  CalendarClock,
++  ChevronDown,
++  Download,
++  FileHeart,
++  Loader2,
++  Lock,
++  Search,
++  Settings2,
++  ShieldCheck,
++  Users,
++  UserRound,
++} from "lucide-react";
++import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
++import { Button } from "@/components/ui/button";
++import { Input } from "@/components/ui/input";
++import { RandIcon } from "@/components/icons/RandIcon";
++import { usePractice } from "@/context/PracticeContext";
++import { ROLE_INFO } from "@/lib/roles";
++import { listTeam, type TeamMember } from "@/lib/db/team";
++import { getActivity, type ActivityCategory, type ActivityEntry } from "@/lib/db/activity";
++import { logExport } from "@/lib/audit";
++import { cn } from "@/lib/utils";
++
++const CATEGORIES: { id: ActivityCategory; label: string; icon: React.ComponentType<{ className?: string }>; tone: string }[] = [
++  { id: "security", label: "Sign-ins & security", icon: ShieldCheck, tone: "bg-slate-100 text-slate-700" },
++  { id: "team", label: "Team", icon: Users, tone: "bg-indigo-50 text-indigo-700" },
++  { id: "clinical", label: "Clinical records", icon: FileHeart, tone: "bg-rose-50 text-rose-700" },
++  { id: "members", label: "Members", icon: UserRound, tone: "bg-primary/10 text-primary" },
++  { id: "appointments", label: "Appointments", icon: CalendarClock, tone: "bg-teal-50 text-teal-700" },
++  { id: "sales", label: "Sales & stock", icon: RandIcon, tone: "bg-amber-50 text-amber-700" },
++  { id: "settings", label: "Settings", icon: Settings2, tone: "bg-muted text-ink" },
++];
++const CATEGORY = Object.fromEntries(CATEGORIES.map((c) => [c.id, c])) as Record<ActivityCategory, (typeof CATEGORIES)[number]>;
++
++function dayLabel(d: Date) {
++  if (isToday(d)) return "Today";
++  if (isYesterday(d)) return "Yesterday";
++  return format(d, "EEEE d MMMM yyyy");
++}
++
++/** "Chrome on Windows" from a browser's user-agent text. */
++function device(ua: string | null) {
++  if (!ua) return null;
++  const browser = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : null;
++  const os = /Windows/.test(ua) ? "Windows" : /Android/.test(ua) ? "Android" : /iPhone|iPad/.test(ua) ? "iPhone/iPad" : /Mac OS/.test(ua) ? "Mac" : /Linux/.test(ua) ? "Linux" : null;
++  return [browser, os].filter(Boolean).join(" on ") || ua.slice(0, 60);
++}
++
++function show(v: unknown) {
++  if (v === null || v === undefined || v === "") return "–";
++  if (typeof v === "boolean") return v ? "yes" : "no";
++  return String(v);
++}
++
++function csvCell(v: unknown) {
++  const s = v === null || v === undefined ? "" : String(v);
++  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
++}
++
++function EntryRow({ e }: { e: ActivityEntry }) {
++  const [open, setOpen] = useState(false);
++  const cat = CATEGORY[e.category];
++  const Icon = cat.icon;
++  const values = e.details?.values ?? {};
++  // Don't repeat the person as "team member" on their own sign-in events.
++  const target = e.target_name && e.target_name !== e.actor_name && e.target_name !== e.actor_email ? e.target_name : null;
++  const hasMore = !!(e.ip || e.user_agent || e.details?.changed?.length || Object.keys(values).length);
++
++  return (
++    <li className="px-6 py-3">
++      <button
++        type="button"
++        onClick={() => hasMore && setOpen((o) => !o)}
++        className={cn("flex w-full items-start gap-4 text-left", hasMore && "cursor-pointer")}
++        aria-expanded={hasMore ? open : undefined}
++      >
++        <span className="tabular w-11 shrink-0 pt-1.5 text-xs font-medium text-muted-foreground">
++          {format(new Date(e.occurred_at), "HH:mm")}
++        </span>
++        <span className={cn("mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg", cat.tone)}>
++          <Icon className="h-4 w-4" />
++        </span>
++        <span className="min-w-0 flex-1">
++          <span className="block text-sm text-ink">
++            <span className="font-semibold">{e.actor_name}</span>
++            {e.actor_role && (
++              <span className="ml-1.5 text-xs text-muted-foreground">· {ROLE_INFO[e.actor_role]?.label ?? e.actor_role}</span>
++            )}
++          </span>
++          <span className="block text-sm text-ink/90">{e.description}</span>
++          {(e.patient_name || target) && (
++            <span className="mt-0.5 block text-xs text-muted-foreground">
++              {e.patient_name && <>Member: <span className="font-medium text-ink/80">{e.patient_name}</span></>}
++              {e.patient_name && target && " · "}
++              {target && <>Team member: <span className="font-medium text-ink/80">{target}</span></>}
++            </span>
++          )}
++        </span>
++        {hasMore && (
++          <ChevronDown className={cn("mt-1.5 h-4 w-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
++        )}
++      </button>
++
++      {open && (
++        <dl className="mt-3 ml-[100px] grid gap-x-6 gap-y-1.5 rounded-lg bg-muted/50 px-4 py-3 text-xs sm:grid-cols-[max-content_1fr]">
++          {Object.entries(values).map(([k, v]) => (
++            <div key={k} className="contents">
++              <dt className="font-medium capitalize text-muted-foreground">{k.replace(/_/g, " ")}</dt>
++              <dd className="text-ink">
++                {v && typeof v === "object" && "from" in (v as object)
++                  ? `${show((v as { from: unknown }).from)} → ${show((v as { to: unknown }).to)}`
++                  : show(v)}
++              </dd>
++            </div>
++          ))}
++          {!!e.details?.changed?.length && !Object.keys(values).length && (
++            <div className="contents">
++              <dt className="font-medium text-muted-foreground">Fields changed</dt>
++              <dd className="text-ink">{e.details.changed.map((c) => c.replace(/_/g, " ")).join(", ")}</dd>
++            </div>
++          )}
++          {e.category === "clinical" && (
++            <div className="contents">
++              <dt className="font-medium text-muted-foreground">Content</dt>
++              <dd className="flex items-center gap-1 text-muted-foreground">
++                <Lock className="h-3 w-3" /> Clinical details are never copied into the log
++              </dd>
++            </div>
++          )}
++          {e.ip && (
++            <div className="contents">
++              <dt className="font-medium text-muted-foreground">IP address</dt>
++              <dd className="font-mono text-ink">{e.ip}</dd>
++            </div>
++          )}
++          {e.user_agent && (
++            <div className="contents">
++              <dt className="font-medium text-muted-foreground">Device</dt>
++              <dd className="text-ink" title={e.user_agent}>{device(e.user_agent)}</dd>
++            </div>
++          )}
++          <div className="contents">
++            <dt className="font-medium text-muted-foreground">Recorded by</dt>
++            <dd className="text-ink">{e.source === "app" ? "The Care Africa app" : "The database (can't be skipped)"}</dd>
++          </div>
++        </dl>
++      )}
++    </li>
++  );
++}
++
++/** Settings → Activity log (practice admins only). */
++export function ActivityLog() {
++  const { practice } = usePractice();
++  const [entries, setEntries] = useState<ActivityEntry[]>([]);
++  const [team, setTeam] = useState<TeamMember[]>([]);
++  const [category, setCategory] = useState<ActivityCategory | "">("");
++  const [actorId, setActorId] = useState("");
++  const [search, setSearch] = useState("");
++  const [query, setQuery] = useState("");
++  const [loading, setLoading] = useState(true);
++  const [loadingMore, setLoadingMore] = useState(false);
++  const [hasMore, setHasMore] = useState(false);
++  const [exporting, setExporting] = useState(false);
++  const requestId = useRef(0);
++  const PAGE = 50;
++
++  const filters = useMemo(
++    () => ({ category: category || null, actorId: actorId || null, search: query || null }),
++    [category, actorId, query]
++  );
++
++  // Search as you type, after a short pause.
++  useEffect(() => {
++    const t = setTimeout(() => setQuery(search), 350);
++    return () => clearTimeout(t);
++  }, [search]);
++
++  const load = useCallback(async () => {
++    if (!practice) return;
++    const id = ++requestId.current;
++    setLoading(true);
++    try {
++      const rows = await getActivity(practice.id, filters, undefined, PAGE);
++      if (id !== requestId.current) return;
++      setEntries(rows);
++      setHasMore(rows.length === PAGE);
++    } catch (error) {
++      if (id === requestId.current) toast.error(error instanceof Error ? error.message : "Couldn't load the activity log");
++    } finally {
++      if (id === requestId.current) setLoading(false);
++    }
++  }, [practice?.id, filters]);
++
++  useEffect(() => {
++    load();
++  }, [load]);
++
++  useEffect(() => {
++    if (practice) listTeam(practice.id).then(setTeam).catch(() => setTeam([]));
++  }, [practice?.id]);
++
++  if (!practice) return null;
++  if (practice.role !== "practice_admin") {
++    return (
++      <Card>
++        <CardHeader>
++          <CardTitle className="text-lg">Activity log</CardTitle>
++          <CardDescription>Only a practice admin can see the activity log.</CardDescription>
++        </CardHeader>
++      </Card>
++    );
++  }
++
++  const loadMore = async () => {
++    const last = entries[entries.length - 1];
++    if (!last) return;
++    setLoadingMore(true);
++    try {
++      const rows = await getActivity(practice.id, filters, last.id, PAGE);
++      setEntries((prev) => [...prev, ...rows]);
++      setHasMore(rows.length === PAGE);
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't load more");
++    } finally {
++      setLoadingMore(false);
++    }
++  };
++
++  const exportCsv = async () => {
++    setExporting(true);
++    try {
++      const all: ActivityEntry[] = [];
++      let before: number | undefined;
++      // Up to 10 000 entries with the current filters.
++      for (let i = 0; i < 20; i++) {
++        const rows = await getActivity(practice.id, filters, before, 500);
++        all.push(...rows);
++        if (rows.length < 500) break;
++        before = rows[rows.length - 1].id;
++      }
++      const header = ["Date", "Time", "Person", "Email", "Role", "Category", "What happened", "Member", "Team member", "Details", "IP address", "Device", "Recorded by"];
++      const lines = all.map((e) => {
++        const d = new Date(e.occurred_at);
++        const values = e.details?.values
++          ? Object.entries(e.details.values)
++              .map(([k, v]) => (v && typeof v === "object" && "from" in (v as object) ? `${k}: ${show((v as { from: unknown }).from)} → ${show((v as { to: unknown }).to)}` : `${k}: ${show(v)}`))
++              .join("; ")
++          : e.details?.changed?.join(", ") ?? "";
++        return [
++          format(d, "yyyy-MM-dd"), format(d, "HH:mm:ss"), e.actor_name, e.actor_email, e.actor_role ? ROLE_INFO[e.actor_role]?.label : "",
++          CATEGORY[e.category].label, e.description, e.patient_name, e.target_name, values, e.ip, device(e.user_agent),
++          e.source === "app" ? "App" : "Database",
++        ].map(csvCell).join(",");
++      });
++      const blob = new Blob(["﻿" + [header.join(","), ...lines].join("\r\n")], { type: "text/csv;charset=utf-8" });
++      const url = URL.createObjectURL(blob);
++      const a = document.createElement("a");
++      a.href = url;
++      a.download = `activity-log-${practice.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${format(new Date(), "yyyy-MM-dd")}.csv`;
++      a.click();
++      URL.revokeObjectURL(url);
++      await logExport(practice.id, "activity_log", all.length);
++      toast.success(`Exported ${all.length.toLocaleString("en-ZA")} entries`);
++      load();
++    } catch (error) {
++      toast.error(error instanceof Error ? error.message : "Couldn't export");
++    } finally {
++      setExporting(false);
++    }
++  };
++
++  // Group by day.
++  const groups: { day: string; items: ActivityEntry[] }[] = [];
++  for (const e of entries) {
++    const day = dayLabel(new Date(e.occurred_at));
++    const last = groups[groups.length - 1];
++    if (last?.day === day) last.items.push(e);
++    else groups.push({ day, items: [e] });
++  }
++
++  const selectClass =
++    "h-10 rounded-lg border border-input bg-card px-3 text-sm focus-visible:outline-none focus-visible:border-primary focus-visible:ring-4 focus-visible:ring-primary/15";
++
++  return (
++    <Card className="overflow-hidden">
++      <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-4 space-y-0">
++        <div>
++          <CardTitle className="text-lg">Activity log</CardTitle>
++          <CardDescription className="mt-1 max-w-xl">
++            A permanent record of who did what at {practice.name}. Nobody can change or delete it, including you and
++            Care Africa.
++          </CardDescription>
++        </div>
++        <Button variant="outline" className="gap-2" onClick={exportCsv} disabled={exporting || loading || entries.length === 0}>
++          {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
++          Export CSV
++        </Button>
++      </CardHeader>
++
++      <CardContent className="p-0">
++        <div className="flex flex-wrap gap-2 border-y border-border bg-background/60 px-6 py-3">
++          <div className="relative min-w-[220px] flex-1">
++            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
++            <Input
++              value={search}
++              onChange={(e) => setSearch(e.target.value)}
++              placeholder="Search by member, person or action"
++              className="pl-9"
++              aria-label="Search the activity log"
++            />
++          </div>
++          <select value={category} onChange={(e) => setCategory(e.target.value as ActivityCategory | "")} className={selectClass} aria-label="Type of activity">
++            <option value="">All activity</option>
++            {CATEGORIES.map((c) => (
++              <option key={c.id} value={c.id}>{c.label}</option>
++            ))}
++          </select>
++          <select value={actorId} onChange={(e) => setActorId(e.target.value)} className={selectClass} aria-label="Person">
++            <option value="">Everyone</option>
++            {team.map((m) => (
++              <option key={m.profileId} value={m.profileId}>{m.name || m.email}{m.isActive ? "" : " (former)"}</option>
++            ))}
++          </select>
++        </div>
++
++        {loading ? (
++          <div className="space-y-2 p-6">
++            {[0, 1, 2, 3, 4].map((i) => (
++              <div key={i} className="h-12 animate-pulse rounded-lg bg-muted" />
++            ))}
++          </div>
++        ) : entries.length === 0 ? (
++          <div className="px-6 py-14 text-center">
++            <p className="font-semibold text-ink">Nothing found</p>
++            <p className="mt-1 text-sm text-muted-foreground">
++              {query || category || actorId ? "Try different filters." : "Activity will appear here as your team works."}
++            </p>
++          </div>
++        ) : (
++          <div>
++            {groups.map((g) => (
++              <section key={g.day}>
++                <h3 className="sticky top-0 z-[1] border-b border-border bg-card/95 px-6 py-2 text-xs font-semibold uppercase tracking-[0.06em] text-muted-foreground backdrop-blur">
++                  {g.day}
++                </h3>
++                <ul className="divide-y divide-border">
++                  {g.items.map((e) => (
++                    <EntryRow key={e.id} e={e} />
++                  ))}
++                </ul>
++              </section>
++            ))}
++            {hasMore && (
++              <div className="border-t border-border p-4 text-center">
++                <Button variant="ghost" onClick={loadMore} disabled={loadingMore}>
++                  {loadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : "Show older activity"}
++                </Button>
++              </div>
++            )}
++          </div>
++        )}
++      </CardContent>
++    </Card>
++  );
++}
+diff --git a/src/components/Settings/MySecuritySettings.tsx b/src/components/Settings/MySecuritySettings.tsx
+index bcfe073..6addb5a 100644
+--- a/src/components/Settings/MySecuritySettings.tsx
++++ b/src/components/Settings/MySecuritySettings.tsx
+@@ -17,6 +17,7 @@ import {
+ } from "@/components/ui/dialog";
+ import { RecoveryCodesPanel } from "@/components/twostep/RecoveryCodesPanel";
+ import { getAuthenticator, getRecoveryCodesStatus, makeRecoveryCodes } from "@/lib/twoStep";
++import { logAuthEvent } from "@/lib/audit";
+ 
+ /** Settings → My security: the signed-in person's own login. */
+ export function MySecuritySettings() {
+@@ -53,6 +54,7 @@ export function MySecuritySettings() {
+         return;
+       }
+       setNewCodes(result.codes);
++      logAuthEvent("recovery_codes_renewed");
+       load();
+     } catch (error) {
+       toast.error(error instanceof Error ? error.message : "Couldn't make new codes");
+@@ -69,6 +71,7 @@ export function MySecuritySettings() {
+     try {
+       const { error } = await supabase.auth.updateUser({ password });
+       if (error) throw error;
++      logAuthEvent("password_changed");
+       setPassword("");
+       setConfirm("");
+       toast.success("Password changed");
+diff --git a/src/lib/audit.ts b/src/lib/audit.ts
+new file mode 100644
+index 0000000..12c4617
+--- /dev/null
++++ b/src/lib/audit.ts
+@@ -0,0 +1,60 @@
++import { supabase } from "@/config/supabase";
++
++/**
++ * Reporting events to the practice's activity log (migration 0009). Most
++ * entries are written by the database itself; these are the ones only the
++ * app can see. Logging never blocks or breaks what the person is doing.
++ */
++
++export type AuthEvent =
++  | "signed_in"
++  | "two_step_failed"
++  | "recovery_code_used"
++  | "two_step_set_up"
++  | "recovery_codes_renewed"
++  | "password_changed";
++
++export function logAuthEvent(event: AuthEvent) {
++  void supabase.rpc("log_auth_event", { p_event: event }).then(({ error }) => {
++    if (error && !/does not exist/i.test(error.message)) console.warn("Activity log:", error.message);
++  });
++}
++
++export function logRecordView(patientId: string, what: "member_profile" | "clinical_record" = "member_profile") {
++  void supabase.rpc("log_record_view", { p_patient: patientId, p_what: what }).then(({ error }) => {
++    if (error && !/does not exist/i.test(error.message)) console.warn("Activity log:", error.message);
++  });
++}
++
++export async function logExport(practiceId: string, what: "activity_log" | "members" | "sales" | "clinical", rows?: number) {
++  const { error } = await supabase.rpc("log_export", { p_practice: practiceId, p_what: what, p_rows: rows ?? null });
++  if (error && !/does not exist/i.test(error.message)) console.warn("Activity log:", error.message);
++}
++
++/** Record "Signed in" once per login session (not on every page). */
++export async function logSignInOnce() {
++  const { data } = await supabase.auth.getSession();
++  const token = data.session?.access_token;
++  if (!token) return;
++  let sessionId: string | undefined;
++  try {
++    sessionId = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).session_id;
++  } catch {
++    return;
++  }
++  if (!sessionId) return;
++  const key = "ca-signins-logged";
++  let seen: string[] = [];
++  try {
++    seen = JSON.parse(localStorage.getItem(key) || "[]");
++  } catch {
++    seen = [];
++  }
++  if (seen.includes(sessionId)) return;
++  try {
++    localStorage.setItem(key, JSON.stringify([...seen, sessionId].slice(-20)));
++  } catch {
++    // storage unavailable: still log, at worst twice
++  }
++  logAuthEvent("signed_in");
++}
+diff --git a/src/lib/db/activity.ts b/src/lib/db/activity.ts
+new file mode 100644
+index 0000000..f88b8a8
+--- /dev/null
++++ b/src/lib/db/activity.ts
+@@ -0,0 +1,42 @@
++import { supabase } from "@/config/supabase";
++
++export type ActivityCategory = "security" | "team" | "clinical" | "members" | "settings" | "sales" | "appointments";
++
++export interface ActivityEntry {
++  id: number;
++  occurred_at: string;
++  category: ActivityCategory;
++  action: string;
++  description: string;
++  actor_id: string | null;
++  actor_name: string;
++  actor_email: string | null;
++  actor_role: "practice_admin" | "doctor" | "staff" | null;
++  patient_id: string | null;
++  patient_name: string | null;
++  target_name: string | null;
++  details: { changed?: string[]; values?: Record<string, unknown>; rows?: number; email?: string; role?: string };
++  ip: string | null;
++  user_agent: string | null;
++  source: "database" | "app";
++}
++
++export interface ActivityFilters {
++  category?: ActivityCategory | null;
++  actorId?: string | null;
++  search?: string | null;
++}
++
++/** One page of the practice's activity, newest first. Pass the last id to get older entries. */
++export async function getActivity(practiceId: string, filters: ActivityFilters, before?: number, limit = 50) {
++  const { data, error } = await supabase.rpc("get_activity", {
++    p_practice: practiceId,
++    p_category: filters.category ?? null,
++    p_actor: filters.actorId ?? null,
++    p_search: filters.search?.trim() || null,
++    p_before: before ?? null,
++    p_limit: limit,
++  });
++  if (error) throw new Error(error.message);
++  return (data ?? []) as ActivityEntry[];
++}
+diff --git a/src/pages/ResetPassword.tsx b/src/pages/ResetPassword.tsx
+index 53bac2b..c43a9c5 100644
+--- a/src/pages/ResetPassword.tsx
++++ b/src/pages/ResetPassword.tsx
+@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
+ import { Label } from "@/components/ui/label";
+ import { TwoStepChallenge } from "@/pages/TwoStepVerify";
+ import { clearTwoStepCache } from "@/lib/twoStep";
++import { logAuthEvent } from "@/lib/audit";
+ import { usePractice } from "@/context/PracticeContext";
+ 
+ type Stage = "checking" | "invalid" | "challenge" | "password";
+@@ -62,6 +63,7 @@ export default function ResetPassword() {
+     try {
+       const { error } = await supabase.auth.updateUser({ password });
+       if (error) throw error;
++      logAuthEvent("password_changed");
+       clearTwoStepCache();
+       await refresh();
+       toast.success("Password changed");
+diff --git a/src/pages/Settings.tsx b/src/pages/Settings.tsx
+index b345dc2..61430e8 100644
+--- a/src/pages/Settings.tsx
++++ b/src/pages/Settings.tsx
+@@ -17,6 +17,7 @@ import { BrandingSettings } from '@/components/Settings/BrandingSettings';
+ import { ModulesSettings } from '@/components/Settings/ModulesSettings';
+ import { TeamSettings } from '@/components/Settings/TeamSettings';
+ import { MySecuritySettings } from '@/components/Settings/MySecuritySettings';
++import { ActivityLog } from '@/components/Settings/ActivityLog';
+ import { PRACTICE_TYPES, PRACTICE_TYPE_GROUPS } from '@/lib/practiceTypes';
+ import { useModules } from '@/lib/modules';
+ import { usePractice } from '@/context/PracticeContext';
+@@ -60,6 +61,7 @@ export default function Settings() {
+   const [saving, setSaving] = useState(false);
+   const [practiceData, setPracticeData] = useState<PracticeData | null>(null);
+   const { showsMedicalAids } = useModules();
++  const isPracticeAdmin = practice?.role === "practice_admin";
+ 
+   useEffect(() => {
+     if (practiceLoading) return;
+@@ -143,11 +145,12 @@ export default function Settings() {
+         </div>
+ 
+         <Tabs defaultValue="general" className="space-y-6">
+-          <TabsList className="bg-white border-b border-gray-200 w-full justify-start space-x-8 px-4">
++          <TabsList className="h-auto w-full flex-wrap justify-start gap-1 rounded-xl border border-border bg-card p-1.5">
+             <TabsTrigger value="general">General</TabsTrigger>
+             <TabsTrigger value="hours">Business Hours</TabsTrigger>
+             <TabsTrigger value="team">Team</TabsTrigger>
+             <TabsTrigger value="security">My security</TabsTrigger>
++            {isPracticeAdmin && <TabsTrigger value="activity">Activity log</TabsTrigger>}
+             <TabsTrigger value="modules">Modules</TabsTrigger>
+             <TabsTrigger value="services">{showsMedicalAids ? 'Services & Medical Aids' : 'Services'}</TabsTrigger>
+             <TabsTrigger value="rewards">Rewards Program</TabsTrigger>
+@@ -163,6 +166,10 @@ export default function Settings() {
+             />
+           </TabsContent>
+ 
++          <TabsContent value="activity">
++            <ActivityLog />
++          </TabsContent>
++
+           <TabsContent value="security">
+             <MySecuritySettings />
+           </TabsContent>
+diff --git a/src/pages/TwoStepSetup.tsx b/src/pages/TwoStepSetup.tsx
+index 889949f..5168582 100644
+--- a/src/pages/TwoStepSetup.tsx
++++ b/src/pages/TwoStepSetup.tsx
+@@ -10,6 +10,7 @@ import { CodeInput } from "@/components/twostep/CodeInput";
+ import { RecoveryCodesPanel } from "@/components/twostep/RecoveryCodesPanel";
+ import { usePractice } from "@/context/PracticeContext";
+ import { clearTwoStepCache, makeRecoveryCodes, qrImageSrc, verifyAuthenticatorCode } from "@/lib/twoStep";
++import { logAuthEvent } from "@/lib/audit";
+ import { cn } from "@/lib/utils";
+ 
+ type Step = "intro" | "scan" | "codes";
+@@ -94,6 +95,7 @@ export default function TwoStepSetup() {
+   };
+ 
+   const finish = async () => {
++    logAuthEvent("two_step_set_up");
+     clearTwoStepCache();
+     await refresh();
+     toast.success("Two-step sign-in is on");
+diff --git a/src/pages/TwoStepVerify.tsx b/src/pages/TwoStepVerify.tsx
+index af0b593..b4038dc 100644
+--- a/src/pages/TwoStepVerify.tsx
++++ b/src/pages/TwoStepVerify.tsx
+@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
+ import { CodeInput } from "@/components/twostep/CodeInput";
+ import { usePractice } from "@/context/PracticeContext";
+ import { verifyAuthenticatorCode, verifyRecoveryCode } from "@/lib/twoStep";
++import { logAuthEvent } from "@/lib/audit";
+ 
+ /**
+  * The second step of signing in. Also used inside the password reset page
+@@ -26,10 +27,15 @@ export function TwoStepChallenge({ onDone }: { onDone: () => void }) {
+     e.preventDefault();
+     setBusy(true);
+     try {
+-      if (useRecovery) await verifyRecoveryCode(recovery);
+-      else await verifyAuthenticatorCode(code);
++      if (useRecovery) {
++        await verifyRecoveryCode(recovery);
++        logAuthEvent("recovery_code_used");
++      } else {
++        await verifyAuthenticatorCode(code);
++      }
+       onDone();
+     } catch (error) {
++      logAuthEvent("two_step_failed");
+       toast.error(error instanceof Error ? error.message : "That code didn't work");
+       setCode("");
+     } finally {
+diff --git a/supabase/migrations/0009_audit_log.sql b/supabase/migrations/0009_audit_log.sql
+new file mode 100644
+index 0000000..8ca3391
+--- /dev/null
++++ b/supabase/migrations/0009_audit_log.sql
+@@ -0,0 +1,473 @@
++-- =====================================================================
++-- Care Africa — 0009 audit log ("Activity log")
++-- =====================================================================
++-- A permanent record of who did what, and when, at each practice. Used to
++-- investigate a breach, answer "who changed this?", and show that patient
++-- records are protected (POPIA security safeguards; HPCSA record keeping).
++--
++-- Rules:
++--   * Nobody can edit or delete entries: not staff, not admins, not the
++--     app. Only practice admins can read their practice's entries.
++--   * Most entries are written by the database itself (triggers), so they
++--     can't be skipped by the app: clinical records, members, team and
++--     invitations, practice settings and modules, services, practitioners,
++--     products and prices, rewards, sales, claims and appointments.
++--   * The app reports what only it can see (source = 'app'): sign-ins,
++--     wrong two-step codes, recovery codes used, password changes, opening
++--     a member's profile or clinical record, exports.
++--   * Clinical content is never copied into the log: only which fields
++--     changed. For non-clinical settings (prices, roles, status), the old
++--     and new values are kept.
++--   * Who did it is kept even if their login is later removed (email and
++--     role are copied at the time). Changes made in the Supabase SQL
++--     editor show as "Care Africa".
++--
++-- Run 0006–0008 first.
++-- =====================================================================
++
++begin;
++
++-- ---------------------------------------------------------------------
++-- The log
++-- ---------------------------------------------------------------------
++create table if not exists audit_log (
++  id                bigint generated always as identity primary key,
++  practice_id       uuid,             -- no foreign key: entries outlive deletions
++  occurred_at       timestamptz not null default now(),
++  actor_id          uuid,             -- null = Care Africa (SQL editor / service role)
++  actor_email       text,
++  actor_role        text,
++  category          text not null check (category in
++                      ('security', 'team', 'clinical', 'members', 'settings', 'sales', 'appointments')),
++  action            text not null,
++  description       text not null,
++  patient_id        uuid,
++  target_profile_id uuid,
++  entity_type       text,
++  entity_id         text,
++  details           jsonb not null default '{}'::jsonb,
++  ip                text,
++  user_agent        text,
++  source            text not null default 'database' check (source in ('database', 'app'))
++);
++
++create index if not exists audit_log_practice_time_idx   on audit_log (practice_id, id desc);
++create index if not exists audit_log_practice_patient_idx on audit_log (practice_id, patient_id, id desc);
++create index if not exists audit_log_practice_actor_idx   on audit_log (practice_id, actor_id, id desc);
++
++alter table audit_log enable row level security;
++
++drop policy if exists audit_log_admin_read on audit_log;
++create policy audit_log_admin_read on audit_log
++  for select using (auth_is_practice_admin(practice_id));
++
++revoke insert, update, delete, truncate on audit_log from public, anon, authenticated;
++grant select on audit_log to authenticated;
++
++-- Nobody changes history.
++create or replace function audit_log_immutable()
++returns trigger language plpgsql as $$
++begin
++  raise exception 'The activity log can''t be changed or deleted' using errcode = '42501';
++end $$;
++
++drop trigger if exists audit_log_no_update on audit_log;
++create trigger audit_log_no_update before update or delete on audit_log
++  for each row execute function audit_log_immutable();
++drop trigger if exists audit_log_no_truncate on audit_log;
++create trigger audit_log_no_truncate before truncate on audit_log
++  for each statement execute function audit_log_immutable();
++
++-- ---------------------------------------------------------------------
++-- Writing an entry (internal)
++-- ---------------------------------------------------------------------
++create or replace function _audit_write(
++  p_practice       uuid,
++  p_category       text,
++  p_action         text,
++  p_description    text,
++  p_patient        uuid  default null,
++  p_target_profile uuid  default null,
++  p_entity_type    text  default null,
++  p_entity_id      text  default null,
++  p_details        jsonb default '{}'::jsonb,
++  p_source         text  default 'database'
++) returns void language plpgsql security definer set search_path = public as $$
++declare
++  v_uid     uuid := auth.uid();
++  v_email   text;
++  v_role    text;
++  v_headers json;
++begin
++  if v_uid is not null then
++    select email into v_email from profiles where id = v_uid;
++    select role::text into v_role from practice_members
++     where profile_id = v_uid and practice_id = p_practice;
++  end if;
++
++  begin
++    v_headers := nullif(current_setting('request.headers', true), '')::json;
++  exception when others then
++    v_headers := null;
++  end;
++
++  insert into audit_log (practice_id, actor_id, actor_email, actor_role, category, action,
++                         description, patient_id, target_profile_id, entity_type, entity_id,
++                         details, ip, user_agent, source)
++  values (p_practice, v_uid,
++          coalesce(v_email, case when v_uid is null then 'Care Africa' end),
++          v_role, p_category, p_action, p_description, p_patient, p_target_profile,
++          p_entity_type, p_entity_id, coalesce(p_details, '{}'::jsonb),
++          nullif(btrim(split_part(coalesce(v_headers ->> 'x-forwarded-for', ''), ',', 1)), ''),
++          left(v_headers ->> 'user-agent', 300),
++          p_source);
++end $$;
++revoke execute on function _audit_write(uuid, text, text, text, uuid, uuid, text, text, jsonb, text) from public, anon, authenticated;
++
++-- Values in plain words for descriptions ("front desk", not "staff").
++create or replace function _audit_value(p_key text, p_val jsonb)
++returns text language sql immutable as $$
++  select case
++    when p_val is null or p_val = 'null'::jsonb then '–'
++    when p_key = 'role' then case p_val #>> '{}'
++        when 'practice_admin' then 'practice admin'
++        when 'doctor' then 'practitioner'
++        when 'staff' then 'front desk'
++        else p_val #>> '{}' end
++    when p_key = 'clinical_records' then case p_val #>> '{}'
++        when 'off' then 'off'
++        when 'intake' then 'intake forms'
++        when 'full' then 'full clinical notes'
++        else p_val #>> '{}' end
++    when p_key in ('claims_enabled', 'mfa_required') then case when p_val = 'true'::jsonb then 'on' else 'off' end
++    when jsonb_typeof(p_val) = 'boolean' then case when p_val = 'true'::jsonb then 'yes' else 'no' end
++    else p_val #>> '{}'
++  end;
++$$;
++
++-- ---------------------------------------------------------------------
++-- One trigger for every audited table
++--   TG_ARGV[0] category
++--   TG_ARGV[1] what the row is called ("member", "product", ...)
++--   TG_ARGV[2] columns whose old/new values may be shown ('' = none)
++--   TG_ARGV[3] columns whose changes don't matter ('' = none)
++--   TG_ARGV[4] verb for a new row (default "Added")
++-- ---------------------------------------------------------------------
++create or replace function audit_row_change()
++returns trigger language plpgsql security definer set search_path = public as $$
++declare
++  v_category text := tg_argv[0];
++  v_label    text := tg_argv[1];
++  v_show     text[] := array_remove(string_to_array(coalesce(tg_argv[2], ''), ','), '');
++  v_ignore   text[] := array_remove(string_to_array(coalesce(tg_argv[3], ''), ','), '')
++                       || array['updated_at', 'created_at', 'token_hash'];
++  v_verb     text := coalesce(nullif(tg_argv[4], ''), 'Added');
++  v_new      jsonb := case when tg_op <> 'DELETE' then to_jsonb(new) end;
++  v_old      jsonb := case when tg_op <> 'INSERT' then to_jsonb(old) end;
++  v_row      jsonb := coalesce(v_new, v_old);
++  v_practice uuid;
++  v_patient  uuid;
++  v_target   uuid;
++  v_changed  text[] := '{}';
++  v_values   jsonb := '{}'::jsonb;
++  v_parts    text[] := '{}';
++  v_key      text;
++  v_desc     text;
++begin
++  -- Which practice and member is this about?
++  if tg_table_name = 'practices' then
++    v_practice := (v_row ->> 'id')::uuid;
++  elsif tg_table_name = 'prescriptions' then
++    select practice_id, patient_id into v_practice, v_patient
++      from consultations where id = (v_row ->> 'consultation_id')::uuid;
++  else
++    v_practice := (v_row ->> 'practice_id')::uuid;
++  end if;
++  if tg_table_name = 'patients' then
++    v_patient := (v_row ->> 'id')::uuid;
++  elsif v_row ? 'patient_id' then
++    v_patient := (v_row ->> 'patient_id')::uuid;
++  end if;
++  if tg_table_name = 'practice_members' then
++    v_target := (v_row ->> 'profile_id')::uuid;
++  end if;
++
++  if tg_op = 'UPDATE' then
++    for v_key in select jsonb_object_keys(v_new) loop
++      if v_key <> all(v_ignore) and (v_new -> v_key) is distinct from (v_old -> v_key) then
++        v_changed := v_changed || v_key;
++        if v_key = any(v_show) then
++          v_values := v_values || jsonb_build_object(v_key,
++                        jsonb_build_object('from', v_old -> v_key, 'to', v_new -> v_key));
++          v_parts := v_parts || (replace(v_key, '_', ' ') || ' ' ||
++                        _audit_value(v_key, v_old -> v_key) || ' → ' || _audit_value(v_key, v_new -> v_key));
++        else
++          v_parts := v_parts || replace(v_key, '_', ' ');
++        end if;
++      end if;
++    end loop;
++    if cardinality(v_changed) = 0 then
++      return null;  -- nothing that matters changed
++    end if;
++    v_desc := 'Changed ' || v_label || ': ' || array_to_string(v_parts, ', ');
++  elsif tg_op = 'INSERT' then
++    v_desc := v_verb || ' ' || v_label;
++    foreach v_key in array v_show loop
++      if v_new ? v_key and v_new -> v_key <> 'null'::jsonb then
++        v_values := v_values || jsonb_build_object(v_key, v_new -> v_key);
++      end if;
++    end loop;
++  else
++    v_desc := 'Deleted ' || v_label;
++    foreach v_key in array v_show loop
++      if v_old ? v_key and v_old -> v_key <> 'null'::jsonb then
++        v_values := v_values || jsonb_build_object(v_key, v_old -> v_key);
++      end if;
++    end loop;
++  end if;
++
++  perform _audit_write(
++    v_practice, v_category, tg_table_name || '.' || lower(tg_op), v_desc,
++    v_patient, v_target, tg_table_name, v_row ->> 'id',
++    jsonb_strip_nulls(jsonb_build_object(
++      'changed', case when cardinality(v_changed) > 0 then to_jsonb(v_changed) end,
++      'values',  case when v_values <> '{}'::jsonb then v_values end)));
++  return null;
++end $$;
++
++-- Attach it. Clinical tables show only which fields changed, never values.
++do $$
++declare
++  spec text[];
++  specs text[][] := array[
++    -- table,                category,      label,                 show values,                                   ignore,                                                    insert verb
++    array['consultations',       'clinical',     'consultation note',   'status',                                      '',                                                        'Wrote'],
++    array['prescriptions',       'clinical',     'prescription',        '',                                            '',                                                        'Wrote'],
++    array['patient_conditions',  'clinical',     'condition',           'status',                                      '',                                                        'Recorded'],
++    array['patient_medications', 'clinical',     'medication',          '',                                            '',                                                        'Recorded'],
++    array['patient_documents',   'clinical',     'document',            'doc_type,title',                              '',                                                        'Uploaded'],
++    array['patient_visits',      'clinical',     'visit record',        '',                                            '',                                                        'Recorded'],
++    array['patients',            'members',      'member details',      'is_active',                                   'points',                                                  'Added'],
++    array['practice_members',    'team',         'team member',         'role,is_active',                              '',                                                        'Added'],
++    array['practices',           'settings',     'practice settings',   'plan,clinical_records,claims_enabled,mfa_required,category,name', 'setup_completed',                   'Created'],
++    array['services',            'settings',     'service',             'name,price,is_active',                        '',                                                        'Added'],
++    array['practice_doctors',    'settings',     'practitioner listing','name,deleted_at',                             '',                                                        'Added'],
++    array['products',            'sales',        'product',             'name,price,cost,discount,is_active',          'current_stock',                                           'Added'],
++    array['rewards',             'sales',        'reward',              'name,points_cost,discount_percentage,is_active', '',                                                     'Added'],
++    array['orders',              'sales',        'sale',                'order_number,total,status',                   '',                                                        'Recorded'],
++    array['reward_claims',       'sales',        'reward claim',        'is_redeemed,points_used',                     'redeemed_at',                                             'Recorded'],
++    array['claims',              'sales',        'medical-aid claim',   'status,amount_claimed,amount_paid',           '',                                                        'Created'],
++    array['appointments',        'appointments', 'appointment',         'status,scheduled_for',                        'arrived_at,wait_started_at,seen_at,completed_at',         'Booked']
++  ];
++begin
++  foreach spec slice 1 in array specs loop
++    execute format('drop trigger if exists audit_changes on %I', spec[1]);
++    execute format(
++      'create trigger audit_changes after insert or update or delete on %I
++         for each row execute function audit_row_change(%L, %L, %L, %L, %L)',
++      spec[1], spec[2], spec[3], spec[4], spec[5], spec[6]);
++  end loop;
++end $$;
++
++-- Invitations read better with their own wording.
++create or replace function audit_invitation_change()
++returns trigger language plpgsql security definer set search_path = public as $$
++declare v_role text := case new.role
++                         when 'practice_admin' then 'practice admin'
++                         when 'doctor' then 'practitioner'
++                         else 'front desk' end;
++begin
++  if tg_op = 'INSERT' then
++    perform _audit_write(new.practice_id, 'team', 'invitation.created',
++      'Invited ' || new.email || ' as ' || v_role, null, null, 'practice_invitations', new.id::text,
++      jsonb_build_object('email', new.email, 'role', new.role));
++  elsif new.accepted_at is not null and old.accepted_at is null then
++    perform _audit_write(new.practice_id, 'team', 'invitation.accepted',
++      'Accepted an invitation to join as ' || v_role, null, new.accepted_by, 'practice_invitations', new.id::text,
++      jsonb_build_object('email', new.email, 'role', new.role));
++  elsif new.revoked_at is not null and old.revoked_at is null then
++    perform _audit_write(new.practice_id, 'team', 'invitation.cancelled',
++      'Cancelled the invitation for ' || new.email, null, null, 'practice_invitations', new.id::text,
++      jsonb_build_object('email', new.email));
++  end if;
++  return null;
++end $$;
++
++drop trigger if exists audit_changes on practice_invitations;
++create trigger audit_changes after insert or update on practice_invitations
++  for each row execute function audit_invitation_change();
++
++-- The 2FA reset (0008) touches Supabase's own tables, so log it explicitly.
++create or replace function reset_member_two_step(p_member uuid)
++returns void language plpgsql security definer set search_path = public as $$
++declare
++  v_practice uuid;
++  v_profile  uuid;
++begin
++  select practice_id, profile_id into v_practice, v_profile
++    from practice_members where id = p_member and is_active;
++
++  if v_practice is null or not auth_is_practice_admin(v_practice) then
++    raise exception 'Only a practice admin can reset two-step sign-in' using errcode = '42501';
++  end if;
++  if v_profile = auth.uid() then
++    raise exception 'You can''t reset your own two-step sign-in. Use a recovery code, or ask another admin.'
++      using errcode = '42501';
++  end if;
++
++  delete from auth.mfa_factors where user_id = v_profile;
++  delete from auth.sessions where user_id = v_profile;
++
++  perform _audit_write(v_practice, 'security', 'two_step.reset',
++    'Reset two-step sign-in for a team member (they were signed out everywhere)',
++    null, v_profile, 'practice_members', p_member::text);
++end $$;
++
++-- ---------------------------------------------------------------------
++-- What the app reports
++-- ---------------------------------------------------------------------
++
++-- Sign-in and account security events, recorded at every practice the
++-- person works at. Allowed before the second step, so wrong codes count.
++create or replace function log_auth_event(p_event text)
++returns void language plpgsql security definer set search_path = public as $$
++declare
++  v_uid uuid := auth.uid();
++  v_desc text := case p_event
++    when 'signed_in'              then 'Signed in'
++    when 'two_step_failed'        then 'Entered a wrong two-step code'
++    when 'recovery_code_used'     then 'Signed in with a recovery code'
++    when 'two_step_set_up'        then 'Set up two-step sign-in'
++    when 'recovery_codes_renewed' then 'Made new recovery codes'
++    when 'password_changed'       then 'Changed their password'
++  end;
++  m record;
++begin
++  if v_uid is null then
++    raise exception 'Sign in first' using errcode = '42501';
++  end if;
++  if v_desc is null then
++    raise exception 'Unknown event';
++  end if;
++  -- A runaway page can't flood the log.
++  if (select count(*) from audit_log
++       where actor_id = v_uid and source = 'app' and occurred_at > now() - interval '1 minute') >= 30 then
++    return;
++  end if;
++  for m in select practice_id from practice_members where profile_id = v_uid and is_active loop
++    perform _audit_write(m.practice_id, 'security', 'auth.' || p_event, v_desc,
++      null, null, null, null, '{}'::jsonb, 'app');
++  end loop;
++end $$;
++
++-- Someone opened a member's profile or clinical record.
++create or replace function log_record_view(p_patient uuid, p_what text default 'member_profile')
++returns void language plpgsql security definer set search_path = public as $$
++declare
++  v_practice uuid;
++  v_uid uuid := auth.uid();
++begin
++  select practice_id into v_practice from patients where id = p_patient;
++  if v_practice is null or not auth_is_practice_member(v_practice) then
++    raise exception 'Not allowed' using errcode = '42501';
++  end if;
++  if p_what not in ('member_profile', 'clinical_record') then
++    raise exception 'Unknown record type';
++  end if;
++  if p_what = 'clinical_record' and not auth_is_clinical_member(v_practice) then
++    raise exception 'Not allowed' using errcode = '42501';
++  end if;
++  -- One entry per person, member and record type every 10 minutes.
++  if exists (select 1 from audit_log
++              where practice_id = v_practice and actor_id = v_uid and patient_id = p_patient
++                and action = 'viewed.' || p_what and occurred_at > now() - interval '10 minutes') then
++    return;
++  end if;
++  perform _audit_write(v_practice,
++    case when p_what = 'clinical_record' then 'clinical' else 'members' end,
++    'viewed.' || p_what,
++    case when p_what = 'clinical_record' then 'Opened clinical record' else 'Opened member profile' end,
++    p_patient, null, 'patients', p_patient::text, '{}'::jsonb, 'app');
++end $$;
++
++-- Someone exported or printed practice information.
++create or replace function log_export(p_practice uuid, p_what text, p_rows int default null)
++returns void language plpgsql security definer set search_path = public as $$
++declare
++  v_desc text := case p_what
++    when 'activity_log' then 'Exported the activity log'
++    when 'members'      then 'Exported the member list'
++    when 'sales'        then 'Exported sales'
++    when 'clinical'     then 'Exported or printed a clinical record'
++  end;
++begin
++  if not auth_is_practice_member(p_practice) then
++    raise exception 'Not allowed' using errcode = '42501';
++  end if;
++  if v_desc is null then
++    raise exception 'Unknown export';
++  end if;
++  perform _audit_write(p_practice, case when p_what = 'clinical' then 'clinical' else 'security' end,
++    'export.' || p_what, v_desc, null, null, null, null,
++    jsonb_strip_nulls(jsonb_build_object('rows', p_rows)), 'app');
++end $$;
++
++-- ---------------------------------------------------------------------
++-- Reading it (practice admins only), with names filled in
++-- ---------------------------------------------------------------------
++create or replace function get_activity(
++  p_practice uuid,
++  p_category text   default null,
++  p_actor    uuid   default null,
++  p_search   text   default null,
++  p_before   bigint default null,
++  p_limit    int    default 50
++) returns table (
++  id bigint, occurred_at timestamptz, category text, action text, description text,
++  actor_id uuid, actor_name text, actor_email text, actor_role text,
++  patient_id uuid, patient_name text, target_name text,
++  details jsonb, ip text, user_agent text, source text
++) language plpgsql stable security definer set search_path = public as $$
++begin
++  if not auth_is_practice_admin(p_practice) then
++    raise exception 'Only a practice admin can see the activity log' using errcode = '42501';
++  end if;
++
++  return query
++  select a.id, a.occurred_at, a.category, a.action, a.description,
++         a.actor_id,
++         coalesce(nullif(ap.full_name, ''), a.actor_email, 'Care Africa'),
++         a.actor_email, a.actor_role,
++         a.patient_id,
++         coalesce(nullif(pt.full_name, ''), nullif(btrim(concat_ws(' ', pt.first_name, pt.last_name)), ''),
++                  case when a.patient_id is not null then 'Deleted member' end),
++         coalesce(nullif(tp.full_name, ''), tp.email),
++         a.details, a.ip, a.user_agent, a.source
++    from audit_log a
++    left join profiles ap on ap.id = a.actor_id
++    left join patients pt on pt.id = a.patient_id and pt.practice_id = a.practice_id
++    left join profiles tp on tp.id = a.target_profile_id
++   where a.practice_id = p_practice
++     and (p_category is null or a.category = p_category)
++     and (p_actor is null or a.actor_id = p_actor)
++     and (p_before is null or a.id < p_before)
++     and (p_search is null or p_search = ''
++          or a.description ilike '%' || p_search || '%'
++          or coalesce(pt.full_name, concat_ws(' ', pt.first_name, pt.last_name)) ilike '%' || p_search || '%'
++          or coalesce(ap.full_name, a.actor_email) ilike '%' || p_search || '%')
++   order by a.id desc
++   limit least(greatest(coalesce(p_limit, 50), 1), 500);
++end $$;
++
++revoke execute on function audit_row_change() from public, anon, authenticated;
++revoke execute on function audit_invitation_change() from public, anon, authenticated;
++revoke execute on function log_auth_event(text) from public;
++revoke execute on function log_record_view(uuid, text) from public;
++revoke execute on function log_export(uuid, text, int) from public;
++revoke execute on function get_activity(uuid, text, uuid, text, bigint, int) from public;
++grant execute on function log_auth_event(text) to authenticated;
++grant execute on function log_record_view(uuid, text) to authenticated;
++grant execute on function log_export(uuid, text, int) to authenticated;
++grant execute on function get_activity(uuid, text, uuid, text, bigint, int) to authenticated;
++
++commit;
+diff --git a/supabase/tests/audit_log_test.sql b/supabase/tests/audit_log_test.sql
+new file mode 100644
+index 0000000..3cdfad5
+--- /dev/null
++++ b/supabase/tests/audit_log_test.sql
+@@ -0,0 +1,212 @@
++-- =====================================================================
++-- Care Africa — tests for 0009 (audit log)
++-- =====================================================================
++--   psql "$DATABASE_URL" -f supabase/tests/audit_log_test.sql
++-- Seeds data, asserts, then rolls back.
++-- =====================================================================
++
++begin;
++
++grant usage on schema public to authenticated, anon;
++grant all on all tables in schema public to authenticated;
++-- (Supabase grants table rights broadly too; the log is protected by its
++-- own revokes, policies and triggers, re-applied here after the grant.)
++revoke insert, update, delete, truncate on audit_log from authenticated;
++
++create or replace function _assert(label text, actual text, expected text)
++returns void language plpgsql as $$
++begin
++  if actual is distinct from expected then
++    raise exception 'FAIL  %  got[%] want[%]', label, actual, expected;
++  end if;
++  raise notice 'pass  %', label;
++end $$;
++
++create or replace function _as(actor uuid, aal text default 'aal2') returns void language plpgsql as $$
++begin
++  perform set_config('request.jwt.claim.sub', actor::text, true);
++  perform set_config('request.jwt.claims', json_build_object('sub', actor, 'aal', aal)::text, true);
++  perform set_config('request.headers', '{"x-forwarded-for":"196.25.1.10, 10.0.0.1","user-agent":"TestBrowser/1.0"}', true);
++  perform set_config('role', 'authenticated', true);
++end $$;
++
++create or replace function _done() returns void language plpgsql as $$
++begin
++  perform set_config('role', 'postgres', true);
++  perform set_config('request.jwt.claim.sub', '', true);
++  perform set_config('request.jwt.claims', '', true);
++end $$;
++
++create or replace function _try(actor uuid, q text, aal text default 'aal2')
++returns text language plpgsql as $$
++begin
++  perform _as(actor, aal);
++  execute q;
++  perform _done();
++  return 'ok';
++exception when others then
++  perform _done();
++  return sqlerrm;
++end $$;
++
++create or replace function _read(actor uuid, q text, aal text default 'aal2')
++returns text language plpgsql as $$
++declare out text;
++begin
++  perform _as(actor, aal);
++  execute q into out;
++  perform _done();
++  return coalesce(out, '');
++exception when others then
++  perform _done();
++  return 'ERROR: ' || sqlerrm;
++end $$;
++
++-- a1 owner (admin), s1 front desk, o1 owner of another practice
++insert into auth.users (id, email, raw_user_meta_data) values
++  ('00000000-0000-0000-0000-0000000000a1', 'owner@seaview.test', '{"practice_name":"Seaview","full_name":"Olwethu Owner"}'),
++  ('00000000-0000-0000-0000-0000000000b1', 'desk@seaview.test',  '{"full_name":"Fikile Desk"}'),
++  ('00000000-0000-0000-0000-0000000000c1', 'owner@other.test',   '{"practice_name":"Other"}');
++select set_config('t.p', (select practice_id::text from practice_members where profile_id = '00000000-0000-0000-0000-0000000000a1'), false);
++select set_config('t.o', (select practice_id::text from practice_members where profile_id = '00000000-0000-0000-0000-0000000000c1'), false);
++insert into practice_members (practice_id, profile_id, role)
++  values (current_setting('t.p')::uuid, '00000000-0000-0000-0000-0000000000b1', 'staff');
++
++select _assert('signing up is recorded (practice created)',
++  (select count(*)::text from audit_log where practice_id = current_setting('t.p')::uuid and action = 'practices.insert'), '1');
++
++-- ---------- changes are recorded by the database ----------
++select _try('00000000-0000-0000-0000-0000000000b1',
++  format('insert into patients (id, practice_id, first_name, last_name, phone) values (%L, %L, %L, %L, %L)',
++    '00000000-0000-0000-0000-00000000aaaa', current_setting('t.p'), 'Thandi', 'Mokoena', '0820000000'));
++select _assert('front desk adding a member is recorded, with who did it',
++  (select actor_email || ' / ' || actor_role || ' / ' || description from audit_log where action = 'patients.insert'),
++  'desk@seaview.test / staff / Added member details');
++select _assert('the IP address and browser are kept',
++  (select ip || ' / ' || user_agent from audit_log where action = 'patients.insert'), '196.25.1.10 / TestBrowser/1.0');
++
++select _try('00000000-0000-0000-0000-0000000000b1',
++  format('update patients set phone = %L, email = %L, points = 50 where id = %L', '0831111111', 't@example.com', '00000000-0000-0000-0000-00000000aaaa'));
++select _assert('editing a member lists the fields changed',
++  (select description from audit_log where action = 'patients.update' order by id desc limit 1),
++  'Changed member details: email, phone');
++select _assert('personal details themselves are not copied into the log',
++  (select (details::text like '%0831111111%')::text from audit_log where action = 'patients.update' order by id desc limit 1), 'false');
++
++select _try('00000000-0000-0000-0000-0000000000b1',
++  format('update patients set points = 120 where id = %L', '00000000-0000-0000-0000-00000000aaaa'));
++select _assert('points-only changes are not logged here (the points ledger has them)',
++  (select count(*)::text from audit_log where action = 'patients.update'), '1');
++
++-- Clinical: practitioner/admin only, and no clinical content in the log
++select _try('00000000-0000-0000-0000-0000000000a1',
++  format('insert into patient_conditions (id, practice_id, patient_id, name, notes) values (%L, %L, %L, %L, %L)',
++    '00000000-0000-0000-0000-00000000c0c0', current_setting('t.p'), '00000000-0000-0000-0000-00000000aaaa', 'Asthma', 'Uses inhaler'));
++select _try('00000000-0000-0000-0000-0000000000a1',
++  format('update patient_conditions set notes = %L where id = %L', 'Severe, uses inhaler daily', '00000000-0000-0000-0000-00000000c0c0'));
++select _assert('clinical changes are recorded against the member',
++  (select string_agg(description, ' | ' order by id) from audit_log where category = 'clinical' and patient_id = '00000000-0000-0000-0000-00000000aaaa'),
++  'Recorded condition | Changed condition: notes');
++select _assert('clinical content never enters the log',
++  (select (string_agg(details::text || description, '') ~* 'asthma|inhaler')::text from audit_log where category = 'clinical'), 'false');
++
++-- Settings with values
++select _try('00000000-0000-0000-0000-0000000000a1',
++  format('insert into services (id, practice_id, name, price) values (%L, %L, %L, 650)', '00000000-0000-0000-0000-00000000e001', current_setting('t.p'), 'Check-up'));
++select _try('00000000-0000-0000-0000-0000000000a1',
++  format('update services set price = 700 where id = %L', '00000000-0000-0000-0000-00000000e001'));
++select _assert('a price change shows old and new values',
++  (select description from audit_log where action = 'services.update'), 'Changed service: price 650.00 → 700.00');
++
++select _try('00000000-0000-0000-0000-0000000000a1',
++  format('update practices set clinical_records = %L where id = %L', 'full', current_setting('t.p')));
++select _assert('a module change shows old and new values',
++  (select description from audit_log where action = 'practices.update' order by id desc limit 1),
++  'Changed practice settings: clinical records off → full clinical notes');
++
++-- Appointments: status changes are logged; timestamps alone are not
++select _try('00000000-0000-0000-0000-0000000000b1',
++  format('insert into appointments (id, practice_id, patient_id, scheduled_for, status) values (%L, %L, %L, now(), %L)',
++    '00000000-0000-0000-0000-0000000a0001', current_setting('t.p'), '00000000-0000-0000-0000-00000000aaaa', 'scheduled'));
++select _try('00000000-0000-0000-0000-0000000000b1',
++  format('update appointments set status = %L, arrived_at = now() where id = %L', 'arrived', '00000000-0000-0000-0000-0000000a0001'));
++select _assert('appointment check-in is recorded with the status change',
++  (select description from audit_log where action = 'appointments.update'), 'Changed appointment: status scheduled → arrived');
++
++-- Team
++select _try('00000000-0000-0000-0000-0000000000a1',
++  format('select update_team_member(%L, %L, true)', (select id from practice_members where profile_id = '00000000-0000-0000-0000-0000000000b1'), 'doctor'));
++select _assert('a role change is recorded against the team member',
++  (select description || ' / ' || target_profile_id from audit_log where action = 'practice_members.update'),
++  'Changed team member: role front desk → practitioner / 00000000-0000-0000-0000-0000000000b1');
++select _try('00000000-0000-0000-0000-0000000000a1',
++  format('select create_invitation(%L, %L, %L)', current_setting('t.p'), 'new@seaview.test', 'staff'));
++select _assert('an invitation is recorded in plain words',
++  (select description from audit_log where action = 'invitation.created'), 'Invited new@seaview.test as front desk');
++insert into auth.mfa_factors (user_id, factor_type, status) values ('00000000-0000-0000-0000-0000000000b1', 'totp', 'verified');
++select _try('00000000-0000-0000-0000-0000000000a1',
++  format('select reset_member_two_step(%L)', (select id from practice_members where profile_id = '00000000-0000-0000-0000-0000000000b1')));
++select _assert('a 2FA reset is recorded',
++  (select count(*)::text from audit_log where action = 'two_step.reset' and target_profile_id = '00000000-0000-0000-0000-0000000000b1'), '1');
++
++-- ---------- what the app reports ----------
++select _assert('a wrong two-step code can be logged before the second step',
++  _try('00000000-0000-0000-0000-0000000000b1', 'select log_auth_event(''two_step_failed'')', 'aal1'), 'ok');
++select _assert('it is recorded as reported by the app',
++  (select description || ' / ' || source from audit_log where action = 'auth.two_step_failed'), 'Entered a wrong two-step code / app');
++select _assert('made-up events are refused',
++  _try('00000000-0000-0000-0000-0000000000b1', 'select log_auth_event(''hacked_the_planet'')'), 'Unknown event');
++
++select _try('00000000-0000-0000-0000-0000000000b1', format('select log_record_view(%L)', '00000000-0000-0000-0000-00000000aaaa'));
++select _try('00000000-0000-0000-0000-0000000000b1', format('select log_record_view(%L)', '00000000-0000-0000-0000-00000000aaaa'));
++select _assert('opening a profile is recorded once per 10 minutes',
++  (select count(*)::text from audit_log where action = 'viewed.member_profile'), '1');
++select _assert('another practice cannot log views of our members',
++  _try('00000000-0000-0000-0000-0000000000c1', format('select log_record_view(%L)', '00000000-0000-0000-0000-00000000aaaa')), 'Not allowed');
++
++-- ---------- reading ----------
++select _assert('the admin can read the log',
++  (_read('00000000-0000-0000-0000-0000000000a1', 'select count(*)::text from audit_log')::int > 0)::text, 'true');
++select _assert('a practitioner (not admin) cannot read the log',
++  _read('00000000-0000-0000-0000-0000000000b1', 'select count(*)::text from audit_log'), '0');
++select _assert('practitioners cannot use the activity view either',
++  _try('00000000-0000-0000-0000-0000000000b1', format('select get_activity(%L)', current_setting('t.p'))),
++  'Only a practice admin can see the activity log');
++select _assert('another practice''s admin sees none of it',
++  _read('00000000-0000-0000-0000-0000000000c1', format('select count(*)::text from audit_log where practice_id = %L', current_setting('t.p'))), '0');
++select _assert('the admin sees names filled in',
++  _read('00000000-0000-0000-0000-0000000000a1',
++    format('select actor_name || '' → '' || patient_name from get_activity(%L, %L) where action = %L', current_setting('t.p'), 'members', 'patients.insert')),
++  'Fikile Desk → Thandi Mokoena');
++select _assert('filtering by member name works',
++  _read('00000000-0000-0000-0000-0000000000a1',
++    format('select (count(*) > 3)::text from get_activity(%L, null, null, %L)', current_setting('t.p'), 'mokoena')), 'true');
++select _assert('the admin needs the second step to read it',
++  _try('00000000-0000-0000-0000-0000000000a1', format('select get_activity(%L)', current_setting('t.p')), 'aal1'),
++  'Only a practice admin can see the activity log');
++
++-- ---------- nobody can change history ----------
++select _assert('an admin cannot add fake entries',
++  (_try('00000000-0000-0000-0000-0000000000a1',
++    format('insert into audit_log (practice_id, category, action, description) values (%L, %L, %L, %L)', current_setting('t.p'), 'team', 'x', 'fake'))
++   like 'permission denied%')::text, 'true');
++select _assert('an admin cannot delete entries',
++  (_try('00000000-0000-0000-0000-0000000000a1', 'delete from audit_log') like 'permission denied%')::text, 'true');
++do $$ begin
++  update audit_log set description = 'rewritten';
++  raise exception 'should not reach';
++exception when others then perform set_config('t.err', sqlerrm, true);
++end $$;
++select _assert('not even Care Africa can rewrite it', current_setting('t.err'), 'The activity log can''t be changed or deleted');
++
++-- Deleting a member keeps the history, shown as "Deleted member"
++delete from appointments where patient_id = '00000000-0000-0000-0000-00000000aaaa';
++delete from patient_conditions where patient_id = '00000000-0000-0000-0000-00000000aaaa';
++select _try('00000000-0000-0000-0000-0000000000a1', format('delete from patients where id = %L', '00000000-0000-0000-0000-00000000aaaa'));
++select _assert('deleting a member is recorded and earlier history stays',
++  _read('00000000-0000-0000-0000-0000000000a1',
++    format('select count(*)::text || '' / '' || min(patient_name) from get_activity(%L) where patient_id = %L',
++      current_setting('t.p'), '00000000-0000-0000-0000-00000000aaaa')),
++  '10 / Deleted member');
++
++rollback;
+-- 
+2.43.0
+

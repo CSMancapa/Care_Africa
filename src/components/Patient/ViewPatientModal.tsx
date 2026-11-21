@@ -9,6 +9,8 @@ import { X } from "lucide-react";
 import { useState } from "react";
 import AddAppointmentModal from "../Appointment/AddAppointmentModal";
 import { Patient } from '@/types/patient';
+import { useEffect } from 'react';
+import { logRecordView } from '@/lib/audit';
 import type { Appointment } from '@/types/appointment';
 
 interface ViewPatientModalProps {
@@ -18,11 +20,19 @@ interface ViewPatientModalProps {
   onClose: () => void;
 }
 
-const formatDate = (date: string) => {
-  return format(new Date(date), 'PP');
+// Members may have no date of birth on file; don't crash the profile.
+const formatDate = (date?: string | null) => {
+  if (!date) return 'Not recorded';
+  const d = new Date(date);
+  return isNaN(d.getTime()) ? 'Not recorded' : format(d, 'd MMM yyyy');
 };
 
 export default function ViewPatientModal({ patient, appointments, isOpen, onClose }: ViewPatientModalProps) {
+  // Opening a member's profile is recorded in the activity log.
+  useEffect(() => {
+    if (isOpen && patient?.id) logRecordView(patient.id, 'member_profile');
+  }, [isOpen, patient?.id]);
+
   const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
   
 
@@ -133,7 +143,7 @@ export default function ViewPatientModal({ patient, appointments, isOpen, onClos
                         >
                           <div>
                             <p className="font-medium">
-                              {appointment.time ? format(new Date(appointment.time), 'PPP') : 'No date'}
+                              {appointment.time ? format(new Date(appointment.time), 'd MMMM yyyy') : 'No date'}
                             </p>
                             <p className="text-sm text-muted-foreground">{appointment.patient}</p>
                           </div>
@@ -195,7 +205,7 @@ export default function ViewPatientModal({ patient, appointments, isOpen, onClos
                                 Code: {claim.redemption_code}
                               </p>
                               <p className="text-sm text-muted-foreground">
-                                {format(new Date(claim.claimed_at), 'PPp')}
+                                {claim.claimed_at ? format(new Date(claim.claimed_at), 'd MMM yyyy, HH:mm') : ''}
                               </p>
                             </div>
                           </div>
